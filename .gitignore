@@ -1,0 +1,10 @@
+# VS-Code
+.vscode/*
+.history/
+*.vsix
+
+# JetBrains IDEs
+.idea/*
+
+# Environment files
+.venv/*
