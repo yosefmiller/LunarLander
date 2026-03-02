@@ -51,10 +51,45 @@ ORANGE = (255, 165, 0)
 
 
 class LunarLanderEnv:
+    x: float
+    y: float
+    vx: float
+    vy: float
+    theta: float
+    omega: float
+    fuel: float
+    mass: float
+    landed: bool
+    crashed: bool
+    crash_reason: str
+    trace: list
+    prev_shaping: float|None
+    moment_of_inertia: float
+
+
     def __init__(self):
         self.reset()
 
-    def reset(self):
+    def reset(self) -> np.ndarray:
+        self._init_state()
+
+        self.fuel = FUEL_MASS_START
+        self.mass = LANDER_DRY_MASS + self.fuel
+
+        self.landed = False
+        self.crashed = False
+        self.crash_reason = ""  # Store reason for display
+        self.trace = []
+
+        self.prev_shaping = None
+
+        # Approximate Moment of Inertia (Rectangle)
+        # Note: In reality, `I` changes as fuel burns, but we keep `I` constant for stability
+        self.moment_of_inertia = LANDER_DRY_MASS * (LANDER_WIDTH ** 2 + LANDER_HEIGHT ** 2) / 12.0
+
+        return self._get_state()
+
+    def _init_state(self):
         # 1. INITIALIZATION (Apollo "High Gate" Style)
         # Instead of dropping straight down, we come in with lateral speed.
         # This requires a "Braking Burn".
@@ -72,23 +107,7 @@ class LunarLanderEnv:
         self.theta = np.random.uniform(-0.2, 0.2)
         self.omega = 0.0
 
-        self.fuel = FUEL_MASS_START
-        self.mass = LANDER_DRY_MASS + self.fuel
-
-        self.landed = False
-        self.crashed = False
-        self.trace = []
-
-        self.prev_shaping = None
-
-        # Approximate Moment of Inertia (Rectangle)
-        # Note: In reality, I changes as fuel burns, but we keep I constant for stability
-        self.moment_of_inertia = LANDER_DRY_MASS * (LANDER_WIDTH ** 2 + LANDER_HEIGHT ** 2) / 12.0
-
-        self._calculate_shaping()
-        return self._get_state()
-
-    def _calculate_shaping(self):
+    def _calculate_shaping(self) -> float:
         # Potential-based reward shaping
         # Goal: (0,0) position, 0 velocity, 0 angle
         dist_penalty = np.sqrt(self.x ** 2 + self.y ** 2)
@@ -188,22 +207,20 @@ class LunarLanderEnv:
         # Ground Plane (y=0)
         if left_foot[1] <= 0 or right_foot[1] <= 0:
             done = True
-            self.vy = 0
-            self.omega = 0
-
-            # Physics adjustment to sit on ground
-            min_y = min(left_foot[1], right_foot[1])
-            self.y -= min_y
 
             # Landing Criteria (Apollo style: very gentle)
             # Horizontal speed must be near zero
-            # Vertical speed must be < 2 m/s
+            # Vertical speed must be < 2.5 m/s
             # Angle must be level
             # Must be within PAD radius
 
             vel_safe = abs(self.vy) < 2.5 and abs(self.vx) < 2.0
             angle_safe = abs(self.theta) < 0.3
             on_pad = abs(self.x) < (PAD_WIDTH / 2.0)
+
+            # Physics adjustment to sit on ground
+            min_y = min(left_foot[1], right_foot[1])
+            self.y -= min_y
 
             if vel_safe and angle_safe and on_pad:
                 self.landed = True
@@ -216,17 +233,19 @@ class LunarLanderEnv:
                 if not vel_safe: reason.append("Too Fast")
                 if not angle_safe: reason.append("Tilted")
                 if not on_pad: reason.append("Missed LZ")
-                print(f"ABORT/CRASH: {', '.join(reason)}")
+                self.crash_reason = ", ".join(reason)
+                print(f"ABORT/CRASH: {self.crash_reason}")
 
         # Out of bounds
         if abs(self.x) > (SCREEN_WIDTH / SCALE) / 2 + 20 or self.y > (SCREEN_HEIGHT / SCALE) + 20:
             done = True
             self.crashed = True
+            self.crash_reason = "Out of Bounds"
             reward -= 100.0
 
         return self._get_state(), reward, done, {}
 
-    def _get_state(self):
+    def _get_state(self) -> np.ndarray:
         # RL CRITICAL UPDATE: RELATIVE NAVIGATION
         # We output position relative to the target (0,0), not absolute screen coords.
         # This allows the agent to generalize to different landing pad locations.
@@ -241,6 +260,34 @@ class LunarLanderEnv:
             self.fuel / FUEL_MASS_START,
             1.0 if (abs(self.x) < PAD_WIDTH / 2) else 0.0  # Pad Contact Sensor
         ], dtype=np.float32)
+
+
+class SimpleLunarLanderEnv(LunarLanderEnv):
+    """
+    Simplified lunar lander environment: drops straight down (no lateral speed, no tilt).
+    Inherits from LunarLanderEnv to avoid code duplication.
+
+    Key differences:
+    - Starts at x=0 (centered on landing pad) instead of random offset
+    - No lateral velocity (vx=0) instead of 5-10 m/s
+    - No initial tilt (theta=0) instead of random ±0.2 rad
+    - Randomized downward velocity (vy: -3.0 to -0.5 m/s)
+    """
+
+    def _init_state(self):
+        """Override _init_sate() to provide simpler initial conditions."""
+        # Simple initialization: straight drop
+        self.x = 0.0  # Centered on landing pad
+        self.y = np.random.uniform(40, 50)  # Start high up
+
+        # No lateral velocity
+        self.vx = 0.0
+        # Randomized downward velocity (steeper than complex env)
+        self.vy = np.random.uniform(-3.0, -0.5)
+
+        # No initial tilt
+        self.theta = 0.0
+        self.omega = 0.0
 
 
 class Renderer:
@@ -330,6 +377,7 @@ class Renderer:
             f"ALTITUDE: {self.env.y:.1f} m",
             f"H-SPEED:  {self.env.vx:.1f} m/s",
             f"V-SPEED:  {self.env.vy:.1f} m/s",
+            f"ANGLE:    {math.degrees(self.env.theta):.1f} deg",
             f"FUEL:     {self.env.fuel:.1f} kg",
             f"MASS:     {self.env.mass:.0f} kg"
         ]
@@ -351,14 +399,16 @@ class Renderer:
             s = pygame.Surface((SCREEN_WIDTH, 60), pygame.SRCALPHA)
             s.fill((255, 0, 0, 100))
             self.screen.blit(s, (0, SCREEN_HEIGHT / 2 - 30))
-            msg = self.font.render("VEHICLE LOST - R to Reset", True, WHITE)
-            self.screen.blit(msg, (SCREEN_WIDTH / 2 - 120, SCREEN_HEIGHT / 2 - 10))
+            crash_msg = f"VEHICLE CRASHED: {self.env.crash_reason} - R to Reset" if self.env.crash_reason else "VEHICLE LOST - R to Reset"
+            msg = self.font.render(crash_msg, True, WHITE)
+            self.screen.blit(msg, (SCREEN_WIDTH / 2 - 200, SCREEN_HEIGHT / 2 - 10))
 
         pygame.display.flip()
 
 
 def main():
-    env = LunarLanderEnv()
+    # env = LunarLanderEnv()
+    env = SimpleLunarLanderEnv()
     renderer = Renderer(env)
     running = True
 
