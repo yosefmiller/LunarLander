@@ -387,10 +387,10 @@ class Renderer:
 
         # -- FLAMES --
         if self.env.fuel > 0:
-            if action == 2:  # Main Engine
+            if action == 1:  # Main Engine
                 pygame.draw.polygon(lander_surf, ORANGE,
                                     [(cx - w / 3, cy + h / 1.5), (cx + w / 3, cy + h / 1.5), (cx, cy + h * 1.5)])
-            if action == 1:  # Right RCS (Visualized on side)
+            if action == 2:  # Right RCS
                 pygame.draw.circle(lander_surf, WHITE, (int(cx - w / 2), int(cy - h / 4)), 3)
             if action == 3:  # Left RCS
                 pygame.draw.circle(lander_surf, WHITE, (int(cx + w / 2), int(cy - h / 4)), 3)
