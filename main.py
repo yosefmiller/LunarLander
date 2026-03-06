@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import numpy as np
 import pygame
 import math
@@ -50,6 +52,26 @@ BLUE = (50, 150, 255)
 ORANGE = (255, 165, 0)
 
 
+@dataclass
+class LunarLanderState:
+    """Represents the state of the lunar lander."""
+    x: float  # Relative distance X (normalized)
+    y: float  # Relative distance Y (normalized)
+    vx: float  # Velocity X (normalized)
+    vy: float  # Velocity Y (normalized)
+    theta: float  # Angle (radians)
+    omega: float  # Angular velocity
+    fuel: float  # Fuel remaining (normalized)
+    on_pad: float  # Pad contact sensor (0.0 or 1.0)
+
+    def to_array(self) -> np.ndarray:
+        """Convert state to numpy array for RL algorithms."""
+        return np.array([
+            self.x, self.y, self.vx, self.vy,
+            self.theta, self.omega, self.fuel, self.on_pad
+        ], dtype=np.float32)
+
+
 class LunarLanderEnv:
     x: float
     y: float
@@ -70,7 +92,7 @@ class LunarLanderEnv:
     def __init__(self):
         self.reset()
 
-    def reset(self) -> np.ndarray:
+    def reset(self) -> LunarLanderState:
         self._init_state()
 
         self.fuel = FUEL_MASS_START
@@ -140,26 +162,29 @@ class LunarLanderEnv:
         sin_theta = np.sin(self.theta)
         cos_theta = np.cos(self.theta)
 
-        if action == 2:  # Main Engine
-            f_thrust = MAIN_THRUST
-            force_x += -sin_theta * f_thrust
-            force_y += cos_theta * f_thrust
-            self.fuel -= FUEL_CONSUMPTION_MAIN * DT
-
-        elif action == 1:  # Left RCS (Fires Right, pushes Left side down/right? No, standard RCS logic)
-            # Standard RL simplified: "Left" action fires left thruster, pushes ship RIGHT, rotates CW
-            f_thrust = SIDE_THRUST
-            force_x += cos_theta * f_thrust
-            force_y += sin_theta * f_thrust
-            torque -= f_thrust * SIDE_ENGINE_OFFSET
-            self.fuel -= FUEL_CONSUMPTION_SIDE * DT
-
-        elif action == 3:  # Right RCS
-            f_thrust = SIDE_THRUST
-            force_x -= cos_theta * f_thrust
-            force_y -= sin_theta * f_thrust
-            torque += f_thrust * SIDE_ENGINE_OFFSET
-            self.fuel -= FUEL_CONSUMPTION_SIDE * DT
+        match action:
+            case 0:  # No Action
+                pass
+            case 1:  # Main Engine
+                f_thrust = MAIN_THRUST
+                force_x += -sin_theta * f_thrust
+                force_y += cos_theta * f_thrust
+                self.fuel -= FUEL_CONSUMPTION_MAIN * DT
+            case 2:  # Left RCS
+                # Standard RL simplified: "Left" action fires left thruster, pushes ship RIGHT, rotates CW
+                f_thrust = SIDE_THRUST
+                force_x += cos_theta * f_thrust
+                force_y += sin_theta * f_thrust
+                torque -= f_thrust * SIDE_ENGINE_OFFSET
+                self.fuel -= FUEL_CONSUMPTION_SIDE * DT
+            case 3:  # Right RCS
+                f_thrust = SIDE_THRUST
+                force_x -= cos_theta * f_thrust
+                force_y -= sin_theta * f_thrust
+                torque += f_thrust * SIDE_ENGINE_OFFSET
+                self.fuel -= FUEL_CONSUMPTION_SIDE * DT
+            case _:
+                raise ValueError("Invalid action")
 
         # Integrate (Newton's Second Law: F = ma)
         accel_x = force_x / self.mass
@@ -245,21 +270,21 @@ class LunarLanderEnv:
 
         return self._get_state(), reward, done, {}
 
-    def _get_state(self) -> np.ndarray:
+    def _get_state(self) -> LunarLanderState:
         # RL CRITICAL UPDATE: RELATIVE NAVIGATION
         # We output position relative to the target (0,0), not absolute screen coords.
         # This allows the agent to generalize to different landing pad locations.
 
-        return np.array([
-            self.x / 50.0,  # Relative Dist X (Normalized)
-            self.y / 50.0,  # Relative Dist Y
-            self.vx / 10.0,  # Vel X
-            self.vy / 10.0,  # Vel Y
-            self.theta,  # Angle
-            self.omega,  # Angular Vel
-            self.fuel / FUEL_MASS_START,
-            1.0 if (abs(self.x) < PAD_WIDTH / 2) else 0.0  # Pad Contact Sensor
-        ], dtype=np.float32)
+        return LunarLanderState(
+            x=self.x / 50.0,  # Relative Dist X (Normalized)
+            y=self.y / 50.0,  # Relative Dist Y
+            vx=self.vx / 10.0,  # Vel X
+            vy=self.vy / 10.0,  # Vel Y
+            theta=self.theta,  # Angle
+            omega=self.omega,  # Angular Vel
+            fuel=self.fuel / FUEL_MASS_START,
+            on_pad=1.0 if (abs(self.x) < PAD_WIDTH / 2) else 0.0  # Pad Contact Sensor
+        )
 
 
 class SimpleLunarLanderEnv(LunarLanderEnv):
@@ -289,6 +314,10 @@ class SimpleLunarLanderEnv(LunarLanderEnv):
         self.theta = 0.0
         self.omega = 0.0
 
+    def step(self, action):
+        if action not in [0, 1]:
+            raise ValueError("Invalid action for SimpleLunarLanderEnv. Only 0 (No Action) and 1 (Main Engine) are allowed.")
+        return super().step(action)
 
 class Renderer:
     def __init__(self, env):
@@ -421,9 +450,9 @@ def main():
         keys = pygame.key.get_pressed()
         action = 0
         if keys[pygame.K_UP]:
-            action = 2
-        elif keys[pygame.K_LEFT]:
             action = 1
+        elif keys[pygame.K_LEFT]:
+            action = 2
         elif keys[pygame.K_RIGHT]:
             action = 3
 
