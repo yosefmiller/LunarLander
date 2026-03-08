@@ -71,6 +71,9 @@ class LunarLanderState:
             self.theta, self.omega, self.fuel, self.on_pad
         ], dtype=np.float32)
 
+    def __str__(self):
+        return f"LunarLanderState(x={self.x:.1f}, y={self.y:.1f}, vx={self.vx:.1f}, vy={self.vy:.1f}, theta={math.degrees(self.theta):.1f} deg, fuel={self.fuel:.1f} kg, on_pad={self.on_pad})"
+
 
 class LunarLanderEnv:
     x: float
@@ -131,20 +134,28 @@ class LunarLanderEnv:
 
     def _calculate_shaping(self) -> float:
         # Potential-based reward shaping
-        # Goal: (0,0) position, 0 velocity, 0 angle
-        dist_penalty = np.sqrt(self.x ** 2 + self.y ** 2)
-        vel_penalty = np.sqrt(self.vx ** 2 + self.vy ** 2)
+        # Normalize variables so the initial potential is roughly -100 to -150.
+        # This makes dense rewards comparable to the +/- 100 terminal rewards.
+        norm_x = self.x / 50.0
+        norm_y = self.y / 50.0
+        norm_vx = self.vx / 10.0
+        norm_vy = self.vy / 10.0
+
+        dist_penalty = np.sqrt(norm_x ** 2 + norm_y ** 2)
+        vel_penalty = np.sqrt(norm_vx ** 2 + norm_vy ** 2)
         tilt_penalty = abs(self.theta)
 
-        # Weights
-        return -10.0 * dist_penalty - 100.0 * vel_penalty - 100.0 * tilt_penalty
+        altitude_factor = (1.0 - norm_y) ** 2  # Squaring it creates a curve that ramps up sharply near the ground
+
+        # Weight the penalties
+        return -10.0 * dist_penalty - 10.0 * altitude_factor * vel_penalty - 0.0 * tilt_penalty
 
     def step(self, action):
         """
         Action space:
         0: Do nothing
-        1: Left Engine (Rotates CW)
-        2: Main Engine
+        1: Main Engine
+        2: Left Engine (Rotates CW)
         3: Right Engine (Rotates CCW)
         """
         if self.landed or self.crashed:
@@ -202,15 +213,19 @@ class LunarLanderEnv:
         self.trace.append((self.x, self.y))
         if len(self.trace) > 200: self.trace.pop(0)
 
-        # Reward Calculation
+        # Give a dense reward based on potential shaping to encourage progress towards landing
         shaping = self._calculate_shaping()
         reward = 0
         if self.prev_shaping is not None:
             reward = shaping - self.prev_shaping
         self.prev_shaping = shaping
 
-        # Constant fuel penalty (encourages time-optimality)
-        reward -= 0.05
+        # Penalize thruster usage directly (encourages fuel efficiency)
+        if action == 1: reward -= 0.15
+        elif action in [2, 3]: reward -= 0.03
+
+        # Very small time penalty to encourage landing over hovering forever
+        reward -= 1.0/FPS
 
         # Collision Check
         done = False
@@ -250,16 +265,19 @@ class LunarLanderEnv:
             if vel_safe and angle_safe and on_pad:
                 self.landed = True
                 reward += 100.0
-                print(f"EAGLE HAS LANDED. Fuel Left: {self.fuel:.1f}kg")
+                print(f"EAGLE HAS LANDED. Fuel Spent: {FUEL_MASS_START - self.fuel:.1f} kg")
             else:
                 self.crashed = True
-                reward -= 100.0
+                if not vel_safe: reward -= 50.0
+                if not angle_safe: reward -= 30.0
+                if not on_pad: reward -= 100.0
+
                 reason = []
                 if not vel_safe: reason.append("Too Fast")
                 if not angle_safe: reason.append("Tilted")
                 if not on_pad: reason.append("Missed LZ")
                 self.crash_reason = ", ".join(reason)
-                print(f"ABORT/CRASH: {self.crash_reason}")
+                # print(f"ABORT/CRASH: {self.crash_reason}")
 
         # Out of bounds
         if abs(self.x) > (SCREEN_WIDTH / SCALE) / 2 + 20 or self.y > (SCREEN_HEIGHT / SCALE) + 20:
@@ -271,10 +289,7 @@ class LunarLanderEnv:
         return self._get_state(), reward, done, {}
 
     def _get_state(self) -> LunarLanderState:
-        # RL CRITICAL UPDATE: RELATIVE NAVIGATION
-        # We output position relative to the target (0,0), not absolute screen coords.
-        # This allows the agent to generalize to different landing pad locations.
-
+        # Normalize state variables to roughly -1.0 to 1.0 range for RL algorithms.
         return LunarLanderState(
             x=self.x / 50.0,  # Relative Dist X (Normalized)
             y=self.y / 50.0,  # Relative Dist Y
@@ -328,7 +343,8 @@ class Renderer:
         self.font = pygame.font.SysFont("monospace", 16)
         self.env = env
 
-    def world_to_screen(self, x, y):
+    @staticmethod
+    def world_to_screen(x, y):
         # Center x on screen (Screen Center = World 0)
         screen_x = int(SCREEN_WIDTH / 2 + x * SCALE)
         # Flip Y (Screen 0 is top)
@@ -407,6 +423,7 @@ class Renderer:
             f"H-SPEED:  {self.env.vx:.1f} m/s",
             f"V-SPEED:  {self.env.vy:.1f} m/s",
             f"ANGLE:    {math.degrees(self.env.theta):.1f} deg",
+            f"ANG.VEL:  {math.degrees(self.env.omega):.1f} deg/s",
             f"FUEL:     {self.env.fuel:.1f} kg",
             f"MASS:     {self.env.mass:.0f} kg"
         ]
