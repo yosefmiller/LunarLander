@@ -144,11 +144,10 @@ class LunarLanderEnv:
         dist_penalty = np.sqrt(norm_x ** 2 + norm_y ** 2)
         vel_penalty = np.sqrt(norm_vx ** 2 + norm_vy ** 2)
         tilt_penalty = abs(self.theta)
+        ang_vel_penalty = abs(self.omega)
 
-        altitude_factor = (1.0 - norm_y) ** 2  # Squaring it creates a curve that ramps up sharply near the ground
-
-        # Weight the penalties
-        return -10.0 * dist_penalty - 10.0 * altitude_factor * vel_penalty - 0.0 * tilt_penalty
+        # Consider all penalties together to encourage balanced progress towards landing
+        return -100.0 * (dist_penalty + vel_penalty + tilt_penalty + ang_vel_penalty)
 
     def step(self, action):
         """
@@ -221,8 +220,8 @@ class LunarLanderEnv:
         self.prev_shaping = shaping
 
         # Penalize thruster usage directly (encourages fuel efficiency)
-        if action == 1: reward -= 0.15
-        elif action in [2, 3]: reward -= 0.03
+        if action == 1: reward -= 0.03
+        elif action in [2, 3]: reward -= 0.01
 
         # Very small time penalty to encourage landing over hovering forever
         reward -= 1.0/FPS
@@ -268,9 +267,7 @@ class LunarLanderEnv:
                 print(f"EAGLE HAS LANDED. Fuel Spent: {FUEL_MASS_START - self.fuel:.1f} kg")
             else:
                 self.crashed = True
-                if not vel_safe: reward -= 50.0
-                if not angle_safe: reward -= 30.0
-                if not on_pad: reward -= 100.0
+                reward -= 100
 
                 reason = []
                 if not vel_safe: reason.append("Too Fast")
@@ -286,7 +283,8 @@ class LunarLanderEnv:
             self.crash_reason = "Out of Bounds"
             reward -= 100.0
 
-        return self._get_state(), reward, done, {}
+        result = {'crashed': self.crashed, 'landed': self.landed}
+        return self._get_state(), reward, done, result, {}
 
     def _get_state(self) -> LunarLanderState:
         # Normalize state variables to roughly -1.0 to 1.0 range for RL algorithms.
@@ -313,26 +311,113 @@ class SimpleLunarLanderEnv(LunarLanderEnv):
     - No initial tilt (theta=0) instead of random ±0.2 rad
     - Randomized downward velocity (vy: -3.0 to -0.5 m/s)
     """
+    def __init__(self, num_actions=2):
+        self.num_actions = num_actions  # Default is only Main Engine and No Action
+        super().__init__()
 
     def _init_state(self):
         """Override _init_sate() to provide simpler initial conditions."""
         # Simple initialization: straight drop
-        self.x = 0.0  # Centered on landing pad
+        self.x = 0.0  # Start centered on the pad
+        
         self.y = np.random.uniform(40, 50)  # Start high up
 
         # No lateral velocity
         self.vx = 0.0
+
         # Randomized downward velocity (steeper than complex env)
         self.vy = np.random.uniform(-3.0, -0.5)
 
         # No initial tilt
         self.theta = 0.0
         self.omega = 0.0
-
+    
     def step(self, action):
-        if action not in [0, 1]:
+        if self.num_actions == 2 and action not in [0, 1]:
             raise ValueError("Invalid action for SimpleLunarLanderEnv. Only 0 (No Action) and 1 (Main Engine) are allowed.")
         return super().step(action)
+    
+    def _calculate_shaping(self) -> float:
+        if self.num_actions != 2:
+            return super()._calculate_shaping()
+
+        # Potential-based reward shaping
+        # Normalize variables so the initial potential is roughly -100 to -150.
+        # This makes dense rewards comparable to the +/- 100 terminal rewards.
+        norm_x = self.x / 50.0
+        norm_y = self.y / 50.0
+        norm_vx = self.vx / 10.0
+        norm_vy = self.vy / 10.0
+
+        dist_penalty = np.sqrt(norm_x ** 2 + norm_y ** 2)
+        vel_penalty = np.sqrt(norm_vx ** 2 + norm_vy ** 2)
+        tilt_penalty = abs(self.theta)
+
+        altitude_factor = (1.0 - norm_y) ** 2  # Squaring it creates a curve that ramps up sharply near the ground
+
+        # Weight the penalties
+        return -10.0 * dist_penalty - 10.0 * altitude_factor * vel_penalty - 0.0 * tilt_penalty
+
+class LLE_XOffset(LunarLanderEnv):
+    """
+    Simplified lunar lander environment: drops down from some offset for x, y (no tilt).
+    Inherits from LunarLanderEnv to avoid code duplication.
+
+    Key differences:
+    - Randomized x offset (vy: -10.0 to 10.0 m/s)
+    - No lateral velocity (vx=0) instead of 5-10 m/s
+    - No initial tilt (theta=0) instead of random ±0.2 rad
+    - Randomized downward velocity (vy: -3.0 to -0.5 m/s)
+    """
+
+    def _init_state(self):
+        """Override _init_sate() to provide simpler initial conditions."""
+        # Add an x offset
+        start_x_range = [-15.0, -10.0] if np.random.rand() > 0.5 else [10.0, 15.0]
+        self.x = np.random.uniform(start_x_range[0], start_x_range[1])
+        
+        self.y = np.random.uniform(40, 50)  # Start high up
+
+        # No lateral velocity
+        self.vx = 0.0
+
+        # Randomized downward velocity (steeper than complex env)
+        self.vy = np.random.uniform(-1.5, -0.5)
+
+        # No initial tilt
+        self.theta = 0.0
+        self.omega = 0.0
+
+class LLE_InitialVelocity(LunarLanderEnv):
+    """
+    Harder lunar lander environment: drops down from some offset for x, y and some initial velociy (no tilt).
+    Inherits from LunarLanderEnv to avoid code duplication.
+
+    Key differences:
+    - Randomized x offset (vy: -1.5 to 1.5.0 m/s)
+    - Randomized velocity (vx: instead of -3.0 to 3.0 m/s)
+    - No initial tilt (theta=0)
+    - Randomized downward velocity (vy: -3.0 to -0.5 m/s)
+    """
+
+    def _init_state(self):
+        """Override _init_sate() to provide simpler initial conditions."""
+        # Add an x offset
+        start_x_range = [-30, -20] if np.random.rand() > 0.5 else [20, 30]
+        self.x = np.random.uniform(start_x_range[0], start_x_range[1])
+        
+        self.y = np.random.uniform(40, 50)  # Start high up
+
+        # Horizontal velocity points towards the center, but fast
+        direction = -1.0 if self.x > 0 else 1.0
+        self.vx = np.random.uniform(1.0, 3.0) * direction
+
+        # Randomized downward velocity (steeper than complex env)
+        self.vy = np.random.uniform(-1.5, -0.5)
+
+        # No initial tilt
+        self.theta = 0.0
+        self.omega = 0.0
 
 class Renderer:
     def __init__(self, env):

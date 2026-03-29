@@ -7,7 +7,7 @@ import numpy as np
 import pygame
 from tqdm import tqdm
 
-from main import SimpleLunarLanderEnv, LunarLanderEnv, Renderer
+from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 
 
 class SARSAAgent:
@@ -38,7 +38,7 @@ class SARSAAgent:
         self.epsilon = epsilon              # Exploration rate
         self.epsilon_decay = epsilon_decay  # How fast exploration drops
         self.epsilon_min = epsilon_min
-        
+
         # Q-table: dictionary mapping a state tuple -> numpy array of Q-values
         self.q_table = defaultdict(lambda: np.zeros(self.n_actions))
         
@@ -46,12 +46,12 @@ class SARSAAgent:
         # np.digitize returns the bin index. Out of bounds values go into the first/last bins.
         # We increase resolution for y and vy as they are critical for the landing criteria.
         self.bins = {
-            'x': np.linspace(-1.0, 1.0, 8),
-            'y': np.linspace(-0.1, 1.1, 12),     # Normalized Y starts ~1.0, ground is 0.0
-            'vx': np.linspace(-1.0, 1.0, 8),
-            'vy': np.linspace(-0.6, 0.6, 12),    # High resolution near 0 for soft landings
-            'theta': np.linspace(-0.5, 0.5, 8),
-            'omega': np.linspace(-0.5, 0.5, 8)
+            'x': np.array([-0.6, -0.3, -0.15, 0.15, 0.3, 0.6]),  # 7 bins
+            'y': np.array([0.02, 0.05, 0.1, 0.25, 0.5, 0.8]),  # 7 bins
+            'vx': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
+            'vy': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
+            'theta': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5]),  # 7 bins
+            'omega': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5])  # 7 bins
         }
 
     def discretize(self, state):
@@ -63,7 +63,7 @@ class SARSAAgent:
         bin_vy = np.digitize(state.vy, self.bins['vy'])
         bin_theta = np.digitize(state.theta, self.bins['theta'])
         bin_omega = np.digitize(state.omega, self.bins['omega'])
-        
+
         # Fuel and on_pad are explicitly ignored to reduce the state space
         return bin_x, bin_y, bin_vx, bin_vy, bin_theta, bin_omega
 
@@ -81,7 +81,7 @@ class SARSAAgent:
         
         # If the episode is over, the expected future reward is 0
         next_q = 0 if done else self.q_table[next_state_tuple][next_action]
-        
+
         # SARSA Formula: Q(S,A) = Q(S,A) + alpha * [R + gamma * Q(S', A') - Q(S,A)]
         new_q = current_q + self.alpha * (reward + self.gamma * next_q - current_q)
         self.q_table[state_tuple][action] = new_q
@@ -105,22 +105,25 @@ class SARSAAgent:
         return self
 
 
-def train_agent(env, agent, episodes=800) -> list:
+def train_agent(env, agent, episodes=800, max_steps=1000, agent_type='SARSA') -> list:
     rewards_history = []
+    result_history = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
+    episode_durations = []
     total_bins = len(agent.bins['x']) * len(agent.bins['y']) * len(agent.bins['vx']) * len(agent.bins['vy']) * len(agent.bins['theta']) * len(agent.bins['omega'])
     
     print(f"Training for {episodes} episodes. (Rendering is disabled to run fast...)")
-    for ep in tqdm(range(episodes), desc="Training SARSA Agent"):
+    for ep in tqdm(range(episodes), desc=f"Training {agent_type} Agent"):
         state = env.reset()
         state_tuple = agent.discretize(state)
         action = agent.act(state_tuple)
         
         total_reward = 0
         done = False
+        ep_duration = 0
         
         while not done:
             # Step the environment
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, done, result, _ = env.step(action)
             next_state_tuple = agent.discretize(next_state)
             
             # SARSA requires choosing the next action BEFORE the update
@@ -133,19 +136,39 @@ def train_agent(env, agent, episodes=800) -> list:
             state_tuple = next_state_tuple
             action = next_action
             total_reward += reward
+            ep_duration += 1
+
+            # Limit the episode length
+            result['exceeded_max_steps'] = False
+            if ep_duration > max_steps:
+                done = True
+                result['exceeded_max_steps'] = True
+
+                # Penalty for timeout
+                penalty = 0.0 if agent.n_actions == 2 else -50.0 # No penalty for 2-action envs to encourage learning main engine usage
+                agent.update(state_tuple, action, penalty, next_state_tuple, next_action, done)
             
+        episode_durations.append(ep_duration)
         agent.decay_epsilon()
+        
+         # save this episodes reward and result (crashed/landed)
         rewards_history.append(total_reward)
+        for k in result_history.keys():
+            if result[k]:
+                result_history[k] += 1
         
         if (ep + 1) % 50 == 0:
             avg_reward = np.mean(rewards_history[-50:])
-            coverage = len(agent.q_table) / total_bins * 100
-            print(f"Episode: {ep+1:04d} | Epsilon: {agent.epsilon:.3f} | Last 50 Avg Reward: {avg_reward:.1f} | Q-Table Coverage: {coverage:.2f}%")
+            avg_duration = np.mean(episode_durations[-50:])
+            coverage = (len(agent.q_table) / total_bins) * 100
+            print(f"Episode: {ep+1:04d} | Epsilon: {agent.epsilon:.3f} | Last 50 Avg Reward: {avg_reward:.1f} | Q-Table Coverage: {coverage:.2f}% | Last 50 Avg Episode Duration: {avg_duration:.1f} steps")
+            episode_durations = []
 
     print("Training Complete!")
+    print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
     return rewards_history
 
-def plot_learning_curve(rewards_history: list, title="Lunar Lander"):
+def plot_learning_curve(rewards_history: list, agent_type='SARSA', title="Lunar Lander"):
     # Plotting the learning curve
     plt.figure(figsize=(10, 5))
     plt.plot(rewards_history, alpha=0.5, color='gray', label='Raw Reward')
@@ -156,7 +179,7 @@ def plot_learning_curve(rewards_history: list, title="Lunar Lander"):
         moving_avg = np.convolve(rewards_history, np.ones(window)/window, mode='valid')
         plt.plot(np.arange(window-1, len(rewards_history)), moving_avg, color='blue', label='Moving Average (20 ep)')
 
-    plt.title(f"SARSA Agent Learning Curve - {title}")
+    plt.title(f"{agent_type} Agent Learning Curve - {title}")
     plt.xlabel('Episode')
     plt.ylabel('Total Reward')
     plt.legend()
@@ -188,7 +211,7 @@ def evaluate_agent(env, agent, num_episodes=5):
             # Greedy action selection (epsilon=0)
             action = agent.act(state_tuple, evaluate=True)
             
-            next_state, reward, done, _ = env.step(action)
+            next_state, reward, done, _, _ = env.step(action)
             state_tuple = agent.discretize(next_state)
             total_reward += reward
             
@@ -202,13 +225,17 @@ def evaluate_agent(env, agent, num_episodes=5):
 
 if __name__ == "__main__":
     # Environment
-    lunar_env = SimpleLunarLanderEnv()
+    num_actions = 4
+    lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
+    # lunar_env = LLE_XOffset()
+    # lunar_env = LLE_InitialVelocity()
+    # lunar_env = LunarLanderEnv()
 
     # Agent
-    sarsa_agent = SARSAAgent(n_actions=2, epsilon_decay=0.995, alpha=0.1) #.load("sarsa_simple_lander")
+    sarsa_agent = SARSAAgent(n_actions=num_actions, epsilon_decay=0.9995, alpha=0.4, epsilon_min=0.05) #.load("sarsa_simple_lander")
 
     # Train the agent and save the Q-table
-    rewards = train_agent(lunar_env, sarsa_agent, episodes=800)
+    rewards = train_agent(lunar_env, sarsa_agent, episodes=50000)
     plot_learning_curve(rewards, "Simple Lunar Lander")
     # sarsa_agent.save("sarsa_simple_lander")
 
