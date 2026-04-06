@@ -1,4 +1,6 @@
-from sarsa_agent import SARSAAgent, train_agent, plot_learning_curve, evaluate_agent
+import numpy as np
+from sarsa_agent import SARSAAgent
+from utils import plot_learning_curve
 from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 
 class QLearningAgent(SARSAAgent):
@@ -32,15 +34,25 @@ if __name__ == "__main__":
     num_actions = 4  # Main engine + left/right thrusters
     # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
     # lunar_env = LLE_XOffset()
-    lunar_env = LLE_InitialVelocity()
-    # lunar_env = LunarLanderEnv()
+    # lunar_env = LLE_InitialVelocity()
+    lunar_env = LunarLanderEnv()
 
     # Agent
-    qlearning_agent = QLearningAgent(n_actions=num_actions, epsilon_decay=0.9995, alpha=0.4, epsilon_min=0.05)
+    qlearning_agent = QLearningAgent(n_actions=num_actions)
 
     # Train the agent and save the Q-table
-    rewards = train_agent(lunar_env, qlearning_agent, episodes=50000, agent_type='Q-Learning')
-    plot_learning_curve(rewards, "Simple Lunar Lander")
+    logging_interval = 500
+    rewards = qlearning_agent.train(lunar_env, 
+                                    episodes=50000, 
+                                    agent_type='Q-Learning', 
+                                    chkpt_path="QLearning_Agent_checkpoints/agent1", 
+                                    debug=True,
+                                    log_every_episodes=logging_interval)
+    episode_intervals = logging_interval*np.ones(len(rewards))
+    plot_learning_curve(rewards, episode_intervals=episode_intervals, title="Simple Lunar Lander")
 
     # Evaluate and render the trained agent
-    evaluate_agent(lunar_env, qlearning_agent, num_episodes=5)
+    qlearning_agent.evaluate(lunar_env, episodes=1000)
+
+    # Show a few episodes of the trained agent
+    qlearning_agent.show_progress(lunar_env, episodes=5)

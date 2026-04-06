@@ -1,17 +1,16 @@
 import os
+import time
 import pickle
 from collections import defaultdict
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pygame
 from tqdm import tqdm
-
+from utils import plot_learning_curve
 from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 
 
 class SARSAAgent:
-    def __init__(self, n_actions, alpha=0.1, gamma=0.99, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
+    def __init__(self, n_actions, alpha=0.1, gamma=0.99, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.05):
         """
         SARSA Agent for the Lunar Lander environment.
 
@@ -45,14 +44,45 @@ class SARSAAgent:
         # --- Discretization Bins ---
         # np.digitize returns the bin index. Out of bounds values go into the first/last bins.
         # We increase resolution for y and vy as they are critical for the landing criteria.
+        x_bins = np.concatenate([
+                    np.array([-0.6, -0.3, -0.15, -0.1]),
+                    np.linspace(-0.1, 0.1, 5),   # high resolution near pad
+                    np.array([0.1, 0.15, 0.3, 0.6])
+                ])
+        y_bins = np.concatenate([
+                    np.linspace(0, 0.01, 4),      # landing zone precision
+                    np.array([0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 0.8])
+                ])
+        vx_bins = np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3])
+        vy_bins = np.concatenate([
+                    np.array([-0.3, -0.1, -0.05]),
+                    np.linspace(-0.05, 0.05, 6),   # critical landing region
+                    np.array([0.05, 0.1, 0.3])
+                ])
+        angle_bins = np.concatenate([
+                        np.array([-0.5, -0.2]),
+                        np.linspace(-0.2, 0.2, 7),   # upright precision
+                        np.linspace(0.2, 0.5)
+                    ])
+        ang_vel_bins = np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5])
+
         self.bins = {
-            'x': np.array([-0.6, -0.3, -0.15, 0.15, 0.3, 0.6]),  # 7 bins
-            'y': np.array([0.02, 0.05, 0.1, 0.25, 0.5, 0.8]),  # 7 bins
-            'vx': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
-            'vy': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
-            'theta': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5]),  # 7 bins
-            'omega': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5])  # 7 bins
+            'x': x_bins,
+            'y': y_bins,
+            'vx': vx_bins,
+            'vy': vy_bins,
+            'theta': angle_bins,
+            'omega': ang_vel_bins
         }
+
+        # self.bins = {
+        #     'x': np.array([-0.6, -0.3, -0.15, 0.15, 0.3, 0.6]),  # 7 bins
+        #     'y': np.array([0.02, 0.05, 0.1, 0.25, 0.5, 0.8]),  # 7 bins
+        #     'vx': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
+        #     'vy': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
+        #     'theta': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5]),  # 7 bins
+        #     'omega': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5])  # 7 bins
+        # }
 
     def discretize(self, state):
         """Converts the continuous state dataclass into a discrete tuple, ignoring fuel."""
@@ -94,6 +124,7 @@ class SARSAAgent:
         with open(f"{filename}.pkl", "wb") as f:
             pickle.dump(dict(self.q_table), f)
 
+    # TODO: Load q table from .npy file instead of pickle
     def load(self, filename="sarsa_q_table") -> 'SARSAAgent':
         """Loads the Q-table from a file."""
         if not os.path.exists(f"{filename}.pkl"):
@@ -104,140 +135,176 @@ class SARSAAgent:
             self.q_table = defaultdict(lambda: np.zeros(self.n_actions), loaded_q_table)
         return self
 
-
-def train_agent(env, agent, episodes=800, max_steps=1000, agent_type='SARSA') -> list:
-    rewards_history = []
-    result_history = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
-    episode_durations = []
-    total_bins = len(agent.bins['x']) * len(agent.bins['y']) * len(agent.bins['vx']) * len(agent.bins['vy']) * len(agent.bins['theta']) * len(agent.bins['omega'])
-    
-    print(f"Training for {episodes} episodes. (Rendering is disabled to run fast...)")
-    for ep in tqdm(range(episodes), desc=f"Training {agent_type} Agent"):
-        state = env.reset()
-        state_tuple = agent.discretize(state)
-        action = agent.act(state_tuple)
+    def train(self,
+              env, 
+              episodes=1000, 
+              agent_type='SARSA', 
+              chkpt_path="SARSA_Agent_checkpoints/agent1", 
+              debug=False,
+              log_every_episodes=500) -> list:
+        rewards_history = []
+        avg_rewards_per_interval = []
+        result_history = {'crashed': 0, 'landed': 0, 'exceeded_max_steps': 0}
+        episode_durations = []
+        total_bins = len(self.bins['x']) * len(self.bins['y']) * len(self.bins['vx']) * len(self.bins['vy']) * len(self.bins['theta']) * len(self.bins['omega'])
         
-        total_reward = 0
-        done = False
-        ep_duration = 0
+        # Save Q table periodically
+        os.makedirs(chkpt_path, exist_ok=True)
+        ckpt_interval = max(1, episodes // 3)
+
+        print(f"Training for {episodes} episodes...")
+
+        # Training duration
+        start = time.time()      
+
+        for ep in range(episodes):
+            state = env.reset()
+            state_tuple = self.discretize(state)
+            action = self.act(state_tuple)
+            
+            total_reward = 0
+            done = False
+            ep_duration = 0
+            
+            while not done:
+                # Step the environment
+                next_state, reward, done, result, _ = env.step(action)
+                next_state_tuple = self.discretize(next_state)
+                
+                # SARSA requires choosing the next action BEFORE the update
+                next_action = self.act(next_state_tuple)
+                
+                # Update Q-Table
+                self.update(state_tuple, action, reward, next_state_tuple, next_action, done)
+                
+                # Progress to next step
+                state_tuple = next_state_tuple
+                action = next_action
+                total_reward += reward
+                ep_duration += 1
+
+                # save result if done
+                if done:
+                    result_history['crashed'] += result[0]
+                    result_history['landed'] += result[1]
+                    result_history['exceeded_max_steps'] += result[2]
+                
+            episode_durations.append(ep_duration)
+            self.decay_epsilon()
+            
+            # save this episode's reward
+            rewards_history.append(total_reward)
+            
+            # Log stats
+            if debug and (ep + 1) % log_every_episodes == 0:
+                avg_reward = np.mean(rewards_history[-log_every_episodes:])
+                avg_duration = np.mean(episode_durations[-log_every_episodes:])
+                coverage = (len(self.q_table) / total_bins) * 100
+                print(f"Episode {ep+1:04d}/{episodes}: Epsilon: {self.epsilon:.3f} | Last {log_every_episodes} Avg Reward: {avg_reward:.1f} | Q-Table Coverage: {coverage:.2f}% | Last {log_every_episodes} Avg Episode Duration: {avg_duration:.1f} steps")
+                avg_rewards_per_interval.append(avg_reward)
+                episode_durations = []
+
+            # Save Q table checkpoints
+            if (ep + 1) % ckpt_interval == 0:
+                np.save(f"{chkpt_path}/{agent_type}_ep_{ep+1:06d}.npy", dict(self.q_table))
+
+        time_elapsed = time.time() - start
+        print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+        print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
+
+        # save final checkpoint and avg rewards
+        np.save(f"{chkpt_path}/{agent_type}_trained.npy", dict(self.q_table))
+        np.save(f"{chkpt_path}/{agent_type}_avg_rewards.npy", avg_rewards_per_interval)
+
+        return avg_rewards_per_interval
+
+    def evaluate(self, env, episodes=100):
+        """Runs the trained agent and returns average reward."""
+        total_rewards = []
+        ep_durations = []
+        results = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
         
-        while not done:
-            # Step the environment
-            next_state, reward, done, result, _ = env.step(action)
-            next_state_tuple = agent.discretize(next_state)
-            
-            # SARSA requires choosing the next action BEFORE the update
-            next_action = agent.act(next_state_tuple)
-            
-            # Update Q-Table
-            agent.update(state_tuple, action, reward, next_state_tuple, next_action, done)
-            
-            # Progress to next step
-            state_tuple = next_state_tuple
-            action = next_action
-            total_reward += reward
-            ep_duration += 1
+        for ep in tqdm(range(episodes)):
+            state = env.reset()
+            state_tuple = self.discretize(state)
+            done = False
+            total_reward = 0
+            ep_duration = 0
 
-            # Limit the episode length
-            result['exceeded_max_steps'] = False
-            if ep_duration > max_steps:
-                done = True
-                result['exceeded_max_steps'] = True
-
-                # Penalty for timeout
-                penalty = 0.0 if agent.n_actions == 2 else -50.0 # No penalty for 2-action envs to encourage learning main engine usage
-                agent.update(state_tuple, action, penalty, next_state_tuple, next_action, done)
-            
-        episode_durations.append(ep_duration)
-        agent.decay_epsilon()
+            while not done:
+                action = self.act(state_tuple, evaluate=True)  # Greedy action selection
+                next_state, reward, done, result, _ = env.step(action)
+                state_tuple = self.discretize(next_state)
+                total_reward += reward
+                ep_duration += 1
+                
+            ep_durations.append(ep_duration)
+            results['crashed'] += int(result[0])
+            results['landed'] += int(result[1])
+            results['exceeded_max_steps'] += int(result[2])
+            total_rewards.append(total_reward)
         
-         # save this episodes reward and result (crashed/landed)
-        rewards_history.append(total_reward)
-        for k in result_history.keys():
-            if result[k]:
-                result_history[k] += 1
+        avg_reward = np.mean(total_rewards)
+        avg_duration = np.mean(ep_durations)
+        print(f"Average Reward over {episodes} episodes: {avg_reward:.1f}")
+        print(f"Average Episode Duration: {avg_duration:.1f} steps")
+        print(f"Results:\n Max Steps Exceeded={results['exceeded_max_steps']}, Crashed={results['crashed']}, Landed={results['landed']}")
+
+    def show_progress(self, env, episodes=5, save_gif=False, gif_path="dqn_agent_progress.gif"):
+        """Runs the trained agent and renders the environment."""
+        print("Launching Pygame to evaluate trained agent...")
+        renderer = Renderer(env)
         
-        if (ep + 1) % 50 == 0:
-            avg_reward = np.mean(rewards_history[-50:])
-            avg_duration = np.mean(episode_durations[-50:])
-            coverage = (len(agent.q_table) / total_bins) * 100
-            print(f"Episode: {ep+1:04d} | Epsilon: {agent.epsilon:.3f} | Last 50 Avg Reward: {avg_reward:.1f} | Q-Table Coverage: {coverage:.2f}% | Last 50 Avg Episode Duration: {avg_duration:.1f} steps")
-            episode_durations = []
-
-    print("Training Complete!")
-    print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
-    return rewards_history
-
-def plot_learning_curve(rewards_history: list, agent_type='SARSA', title="Lunar Lander"):
-    # Plotting the learning curve
-    plt.figure(figsize=(10, 5))
-    plt.plot(rewards_history, alpha=0.5, color='gray', label='Raw Reward')
-
-    # Calculate a moving average
-    window = 20
-    if len(rewards_history) >= window:
-        moving_avg = np.convolve(rewards_history, np.ones(window)/window, mode='valid')
-        plt.plot(np.arange(window-1, len(rewards_history)), moving_avg, color='blue', label='Moving Average (20 ep)')
-
-    plt.title(f"{agent_type} Agent Learning Curve - {title}")
-    plt.xlabel('Episode')
-    plt.ylabel('Total Reward')
-    plt.legend()
-    plt.show()
-
-
-def evaluate_agent(env, agent, num_episodes=5):
-    """Runs the trained agent and renders the environment."""
-    print("Launching Pygame to evaluate trained agent...")
-    renderer = Renderer(env)
-    
-    for ep in range(num_episodes):
-        state = env.reset()
-        state_tuple = agent.discretize(state)
-        done = False
-        total_reward = 0
-        
-        print(f"\nEvaluating Episode {ep + 1}...")
-        
-        while not done:
-            renderer.clock.tick(60) # Lock to 60 FPS for viewing
+        for ep in range(episodes):
+            state = env.reset()
+            state_tuple = self.discretize(state)
+            done = False
+            total_reward = 0
             
-            # Keep pygame pumping so the window doesn't freeze
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    return
+            print(f"\nEvaluating Episode {ep + 1}...")
+            
+            while not done:
+                renderer.clock.tick(60) # Lock to 60 FPS for viewing
+                
+                # Keep pygame pumping so the window doesn't freeze
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        return
 
-            # Greedy action selection (epsilon=0)
-            action = agent.act(state_tuple, evaluate=True)
+                # Greedy action selection (epsilon=0)
+                action = self.act(state_tuple, evaluate=True)
+                
+                next_state, reward, done, _, _ = env.step(action)
+                state_tuple = self.discretize(next_state)
+                total_reward += reward
+                
+                renderer.render(action)
+                
+            print(f"Episode Ended. Total Reward: {total_reward:.1f}")
+            pygame.time.wait(1000) # Pause for a second before the next episode
             
-            next_state, reward, done, _, _ = env.step(action)
-            state_tuple = agent.discretize(next_state)
-            total_reward += reward
-            
-            renderer.render(action)
-            
-        print(f"Episode Ended. Total Reward: {total_reward:.1f}")
-        pygame.time.wait(1000) # Pause for a second before the next episode
-        
-    pygame.quit()
-
+        pygame.quit()
 
 if __name__ == "__main__":
     # Environment
     num_actions = 4
-    lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
+    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
     # lunar_env = LLE_XOffset()
     # lunar_env = LLE_InitialVelocity()
-    # lunar_env = LunarLanderEnv()
+    lunar_env = LunarLanderEnv()
 
     # Agent
-    sarsa_agent = SARSAAgent(n_actions=num_actions, epsilon_decay=0.9995, alpha=0.4, epsilon_min=0.05) #.load("sarsa_simple_lander")
+    sarsa_agent = SARSAAgent(n_actions=num_actions)
 
     # Train the agent and save the Q-table
-    rewards = train_agent(lunar_env, sarsa_agent, episodes=50000)
-    plot_learning_curve(rewards, "Simple Lunar Lander")
-    # sarsa_agent.save("sarsa_simple_lander")
+    logging_interval = 500
+    rewards = sarsa_agent.train(lunar_env, episodes=50000, debug=True, log_every_episodes=logging_interval)
+    episode_intervals = logging_interval = 500*np.ones(len(rewards))
+    plot_learning_curve(rewards, episode_intervals=episode_intervals, title="Simple Lunar Lander")
 
     # Evaluate and render the trained agent
-    evaluate_agent(lunar_env, sarsa_agent, num_episodes=5)
+    sarsa_agent.evaluate(lunar_env, episodes=1000)
+
+    # Show a few episodes of the trained agent
+    sarsa_agent.show_progress(lunar_env, episodes=5)

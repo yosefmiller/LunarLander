@@ -1,10 +1,11 @@
 
-from sarsa_agent import plot_learning_curve
+from utils import plot_learning_curve
 from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 import pygame
+import os
+import time
 from tqdm import tqdm
 import numpy as np
-import random
 
 class TileCoder:
     """
@@ -87,15 +88,15 @@ class SARSALambdaAgent:
             q += self.w.get(key, 0.0)
         return q
     
-    def choose_action(self, tiles):
+    def choose_action(self, tiles, evaluate=False):
         """
         Choose an action based on the current state and epsilon-greedy policy.
 
         :param tiles (List[Tuple[int]]): List of active tile indices for the current state.
         :return: The chosen action.
         """
-        if random.random() < self.epsilon:
-            return random.randint(0, self.actions-1)
+        if not evaluate and np.random.rand() < self.epsilon:
+            return np.random.randint(self.actions)
         
         q_vals = np.array([self.get_q(tiles, a) for a in range(self.actions)])
         return np.argmax(q_vals)
@@ -146,116 +147,175 @@ class SARSALambdaAgent:
             self.epsilon * self.epsilon_decay
         )
 
-def train_agent(env, agent, episodes=5000, max_steps=1000):
-    """
-    Train the given agent in the specified environment for a certain number of episodes.
-    The rewards received in each episode are recorded to analyze the learning progress of the agent.
-    The training loop includes a mechanism to limit the number of steps per episode to prevent infinite loops.
-    
-    :param env: The environment in which the agent will be trained.
-    :param agent: The agent to be trained.
-    :param episodes: The number of episodes to train the agent for.
-    :param max_steps: The maximum number of steps allowed per episode to prevent infinite loops.
-    :return: A list of total rewards received in each episode, which can be used to analyze the learning progress of the agent.
-    """
-    rewards_history = []
-    result_history = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
-    episode_durations = []
-
-    print(f"Training for {episodes} episodes...")
-    for ep in tqdm(range(episodes)):
-        obs = env.reset()
-        tiles = agent.tc.get_tiles(obs)
-        action = agent.choose_action(tiles)
-        agent.e = {}
-        done = False
-        total_reward = 0
-        ep_duration = 0
+    def train(self,
+              env,
+              episodes=5000,
+              chkpt_path="SARSA_Lambda_Agent_checkpoints/agent1",
+              debug=False,
+              log_every_episodes=500) -> list:
+        """
+        Train the given agent in the specified environment for a certain number of episodes.
+        The rewards received in each episode are recorded to analyze the learning progress of the agent.
+        The training loop includes a mechanism to limit the number of steps per episode to prevent infinite loops.
         
-        while not done:
-            obs_next, reward, done, result, _ = env.step(action)
-            next_tiles = agent.tc.get_tiles(obs_next)
-            next_action = agent.choose_action(next_tiles)
-            agent.update(tiles, action, reward, next_tiles, next_action)
-            tiles = next_tiles
-            action = next_action
-            total_reward += reward
-            ep_duration += 1
+        :param env: The environment in which the agent will be trained.
+        :param agent: The agent to be trained.
+        :param episodes: The number of episodes to train the agent for.
+        :param max_steps: The maximum number of steps allowed per episode to prevent infinite loops.
+        :return: A list of total rewards received in each episode, which can be used to analyze the learning progress of the agent.
+        """
+        rewards_history = []
+        avg_rewards_per_interval = []
+        result_history = {'crashed': 0, 'landed': 0, 'exceeded_max_steps': 0}
+        episode_durations = []
 
-            # Limit the episode length
-            result['exceeded_max_steps'] = False
-            if ep_duration > max_steps:
-                done = True
-                result['exceeded_max_steps'] = True
+        # Save Q table periodically
+        os.makedirs(chkpt_path, exist_ok=True)
+        ckpt_interval = max(1, episodes // 3)
 
-                # Penalty for timeout
-                penalty = -50.0
-                agent.update(tiles, action, penalty, next_tiles, next_action)
-        
-        episode_durations.append(ep_duration)
-        agent.decay_epsilon()
-        
-        # save this episodes reward and result (crashed/landed)
-        rewards_history.append(total_reward)
-        for k in result_history.keys():
-            if result[k]:
-                result_history[k] += 1
+        print(f"Training for {episodes} episodes...")
 
-        if (ep + 1) % 100 == 0:
-            avg_reward = np.mean(rewards_history[-100:])
-            avg_duration = np.mean(episode_durations[-100:])
-            print(f"Episode: {ep+1:04d} | Epsilon: {agent.epsilon:.3f} | Last 100 Avg Reward: {avg_reward:.1f} | Last 100 Avg Episode Duration: {avg_duration:.1f} steps")
-            episode_durations = []
+        # Training duration
+        start = time.time()   
 
-    print("Training Complete!")
-    print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
-    return rewards_history
+        for ep in range(episodes):
+            obs = env.reset()
+            tiles = self.tc.get_tiles(obs)
+            action = self.choose_action(tiles)
+            self.e = {}
 
-def evaluate_agent(env, agent, num_episodes=5):
-    """
-    Evaluate the trained agent by running it in the environment for a specified number of episodes and rendering the results.
-    
-    :param env: The environment in which to evaluate the agent.
-    :param agent: The trained agent to be evaluated.
-    :param num_episodes: The number of episodes to run for evaluation.
-    """
-    renderer = Renderer(env)
-    agent.epsilon = 0
-
-    for i in range(num_episodes):
-        obs = env.reset()
-        tiles = agent.tc.get_tiles(obs)
-        done = False
-        total_reward = 0
-
-        while not done:
-            renderer.clock.tick(60) # Lock to 60 FPS for viewing
+            done = False
+            total_reward = 0
+            ep_duration = 0
             
-            # Keep pygame pumping so the window doesn't freeze
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    return
-                
-            action = agent.choose_action(tiles)
-            obs, reward, done, _, _ = env.step(action)
-            tiles = agent.tc.get_tiles(obs)
-            total_reward += reward            
-            renderer.render(action)
+            while not done:
+                # Step the environment
+                obs_next, reward, done, result, _ = env.step(action)
 
-        print(f"Episode {i}: Total Reward={total_reward:.1f}")
-        pygame.time.wait(1000) # Pause for a second before the next episode
+                # Use tiles to determine next action
+                next_tiles = self.tc.get_tiles(obs_next)
+                next_action = self.choose_action(next_tiles)
+
+                # Update the weights
+                self.update(tiles, action, reward, next_tiles, next_action)
+
+                # Progress to the next step
+                tiles = next_tiles
+                action = next_action
+                total_reward += reward
+                ep_duration += 1
+
+                # save result if done
+                if done:
+                    result_history['crashed'] += result[0]
+                    result_history['landed'] += result[1]
+                    result_history['exceeded_max_steps'] += result[2]
+
+            episode_durations.append(ep_duration)
+            self.decay_epsilon()
+            
+            # save this episode's reward
+            rewards_history.append(total_reward)
+
+            # Log stats
+            if debug and (ep + 1) % log_every_episodes == 0:
+                avg_reward = np.mean(rewards_history[-log_every_episodes:])
+                avg_duration = np.mean(episode_durations[-log_every_episodes:])
+                print(f"Episode {ep+1:04d}/{episodes}: Epsilon: {self.epsilon:.3f} | Last {log_every_episodes} Avg Reward: {avg_reward:.1f} | Last {log_every_episodes} Avg Episode Duration: {avg_duration:.1f} steps")
+                avg_rewards_per_interval.append(avg_reward)
+                episode_durations = []
+
+            # Save Q table checkpoints
+            if (ep + 1) % ckpt_interval == 0:
+                np.save(f"{chkpt_path}/SARSALambda_ep_{ep+1:06d}.npy", dict(self.w))
+
+        time_elapsed = time.time() - start
+        print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+        print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
+
+        # save final checkpoint and avg rewards
+        np.save(f"{chkpt_path}/SARSALambda_trained.npy", dict(self.w))
+        np.save(f"{chkpt_path}/SARSALambda_avg_rewards.npy", avg_rewards_per_interval)
+
+        return avg_rewards_per_interval
+
+    def evaluate(self, env, episodes=100):
+            """Runs the trained agent and returns average reward."""
+            total_rewards = []
+            ep_durations = []
+            results = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
+            
+            for ep in tqdm(range(episodes)):
+                obs = env.reset()
+                tiles = self.tc.get_tiles(obs)
+                done = False
+                total_reward = 0
+                ep_duration = 0
+
+                while not done:
+                    action = self.choose_action(tiles, evaluate=True)
+                    obs, reward, done, result, _ = env.step(action)
+                    tiles = self.tc.get_tiles(obs)
+                    total_reward += reward            
+                    ep_duration += 1
+                    
+                ep_durations.append(ep_duration)
+                results['crashed'] += int(result[0])
+                results['landed'] += int(result[1])
+                results['exceeded_max_steps'] += int(result[2])
+                total_rewards.append(total_reward)
+            
+            avg_reward = np.mean(total_rewards)
+            avg_duration = np.mean(ep_durations)
+            print(f"Average Reward over {episodes} episodes: {avg_reward:.1f}")
+            print(f"Average Episode Duration: {avg_duration:.1f} steps")
+            print(f"Results:\n Max Steps Exceeded={results['exceeded_max_steps']}, Crashed={results['crashed']}, Landed={results['landed']}")
+
+    def show_progress(self, env, episodes=5):
+        """
+        Evaluate the trained agent by running it in the environment for a specified number of episodes and rendering the results.
         
-    pygame.quit()
+        :param env: The environment in which to evaluate the agent.
+        :param agent: The trained agent to be evaluated.
+        :param num_episodes: The number of episodes to run for evaluation.
+        """
+        renderer = Renderer(env)
+        self.epsilon = 0
+
+        for i in range(episodes):
+            obs = env.reset()
+            tiles = self.tc.get_tiles(obs)
+            done = False
+            total_reward = 0
+
+            while not done:
+                renderer.clock.tick(60) # Lock to 60 FPS for viewing
+                
+                # Keep pygame pumping so the window doesn't freeze
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        pygame.quit()
+                        return
+                    
+                action = self.choose_action(tiles, evaluate=True)
+                obs, reward, done, _, _ = env.step(action)
+                tiles = self.tc.get_tiles(obs)
+                total_reward += reward            
+                renderer.render(action)
+
+            print(f"Episode {i}: Total Reward={total_reward:.1f}")
+            pygame.time.wait(1000) # Pause for a second before the next episode
+            
+        pygame.quit()
 
 
 if __name__ == "__main__":
     # Environment
     num_actions = 4  # Main engine + left/right thrusters
-    lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
+    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
     # lunar_env = LLE_XOffset()
     # lunar_env = LLE_InitialVelocity()
-    # lunar_env = LunarLanderEnv()
+    lunar_env = LunarLanderEnv()
 
     # Agent
     state_low = [-1.5, -0.5, -2, -2, -1.0, -5]
@@ -264,8 +324,13 @@ if __name__ == "__main__":
     agent = SARSALambdaAgent(state_low, state_high, actions=num_actions)
 
     # Train the agent
-    rewards = train_agent(lunar_env, agent, episodes=5000)
-    plot_learning_curve(rewards, agent_type='SARSA Lambda (with Tile Coding)')
+    logging_interval = 50
+    rewards = agent.train(lunar_env, episodes=20000, debug=True, log_every_episodes=logging_interval)
+    episode_intervals = logging_interval*np.ones(len(rewards))
+    plot_learning_curve(rewards, episode_intervals=episode_intervals, agent_type='SARSA Lambda (with Tile Coding)')
 
     # Evaluate and render the trained agent
-    evaluate_agent(lunar_env, agent, num_episodes=5)
+    agent.evaluate(lunar_env, episodes=1000)
+
+    # Evaluate and render the trained agent
+    agent.show_progress(lunar_env, episodes=5)
