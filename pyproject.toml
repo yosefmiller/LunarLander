@@ -2,10 +2,19 @@
 name = "lander"
 version = "0.1.0"
 description = "Lander is a simple game where the player controls a spaceship and tries to land it safely on a platform. Reinforcement learning is explored in this project to train an agent to play the game effectively."
-requires-python = ">=3.14"
+requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.4.2",
     "pygame-ce>=2.5.6",
     "tqdm>=4.67.3",
+    "torch>=2.0",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true # Ensures this index is only used for specified packages
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130" }

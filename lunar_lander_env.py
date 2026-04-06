@@ -92,7 +92,9 @@ class LunarLanderEnv:
     moment_of_inertia: float
 
 
-    def __init__(self):
+    def __init__(self, max_number_of_steps=1000, debug=True):
+        self.max_number_of_steps = max_number_of_steps
+        self.debug=debug
         self.reset()
 
     def reset(self) -> LunarLanderState:
@@ -101,9 +103,11 @@ class LunarLanderEnv:
         self.fuel = FUEL_MASS_START
         self.mass = LANDER_DRY_MASS + self.fuel
 
+        self.number_of_steps = 0
         self.landed = False
         self.crashed = False
         self.crash_reason = ""  # Store reason for display
+        self.max_step_exceeded = False
         self.trace = []
 
         self.prev_shaping = None
@@ -134,20 +138,13 @@ class LunarLanderEnv:
 
     def _calculate_shaping(self) -> float:
         # Potential-based reward shaping
-        # Normalize variables so the initial potential is roughly -100 to -150.
-        # This makes dense rewards comparable to the +/- 100 terminal rewards.
-        norm_x = self.x / 50.0
-        norm_y = self.y / 50.0
-        norm_vx = self.vx / 10.0
-        norm_vy = self.vy / 10.0
-
-        dist_penalty = np.sqrt(norm_x ** 2 + norm_y ** 2)
-        vel_penalty = np.sqrt(norm_vx ** 2 + norm_vy ** 2)
+        dist_penalty = np.sqrt(self.x ** 2 + self.y ** 2)
+        vel_penalty = np.sqrt(self.vx ** 2 + self.vy ** 2)
         tilt_penalty = abs(self.theta)
         ang_vel_penalty = abs(self.omega)
 
         # Consider all penalties together to encourage balanced progress towards landing
-        return -100.0 * (dist_penalty + vel_penalty + tilt_penalty + ang_vel_penalty)
+        return -3.0 * dist_penalty - 3.0 * vel_penalty - 1.5 * tilt_penalty - 1.5 * ang_vel_penalty
 
     def step(self, action):
         """
@@ -220,11 +217,12 @@ class LunarLanderEnv:
         self.prev_shaping = shaping
 
         # Penalize thruster usage directly (encourages fuel efficiency)
-        if action == 1: reward -= 0.03
-        elif action in [2, 3]: reward -= 0.01
+        if action == 1: reward -= 0.05
+        elif action in [2, 3]: reward -= 0.025
 
-        # Very small time penalty to encourage landing over hovering forever
-        reward -= 1.0/FPS
+        # Time penalty to encourage landing over hovering forever
+        # The abs(self.y) / 50.0 factor encourages getting to the landing pad quickly
+        reward -= 1.0/FPS * (1 + abs(self.y) / 50.0)
 
         # Collision Check
         done = False
@@ -264,10 +262,16 @@ class LunarLanderEnv:
             if vel_safe and angle_safe and on_pad:
                 self.landed = True
                 reward += 100.0
-                print(f"EAGLE HAS LANDED. Fuel Spent: {FUEL_MASS_START - self.fuel:.1f} kg")
+
+                # Bonus for landing with both feet
+                if left_foot[1] <= 0 and right_foot[1] <= 0:
+                    reward += 20.0
+
+                if self.debug:
+                    print(f"EAGLE HAS LANDED. Fuel Spent: {FUEL_MASS_START - self.fuel:.1f} kg")
             else:
                 self.crashed = True
-                reward -= 100
+                reward -= 100.0
 
                 reason = []
                 if not vel_safe: reason.append("Too Fast")
@@ -283,7 +287,15 @@ class LunarLanderEnv:
             self.crash_reason = "Out of Bounds"
             reward -= 100.0
 
-        result = {'crashed': self.crashed, 'landed': self.landed}
+        # Limit the number of steps to prevent infinite episodes
+        self.number_of_steps += 1
+        if self.number_of_steps >= 1000:
+            done = True
+            if not self.landed and not self.crashed:
+                self.crash_reason = "Max Steps Exceeded"
+                self.max_step_exceeded = True
+
+        result = [self.crashed, self.landed, self.max_step_exceeded]
         return self._get_state(), reward, done, result, {}
 
     def _get_state(self) -> LunarLanderState:
@@ -311,7 +323,7 @@ class SimpleLunarLanderEnv(LunarLanderEnv):
     - No initial tilt (theta=0) instead of random ±0.2 rad
     - Randomized downward velocity (vy: -3.0 to -0.5 m/s)
     """
-    def __init__(self, num_actions=2):
+    def __init__(self, num_actions=4):
         self.num_actions = num_actions  # Default is only Main Engine and No Action
         super().__init__()
 
@@ -369,7 +381,6 @@ class LLE_XOffset(LunarLanderEnv):
     - No initial tilt (theta=0) instead of random ±0.2 rad
     - Randomized downward velocity (vy: -3.0 to -0.5 m/s)
     """
-
     def _init_state(self):
         """Override _init_sate() to provide simpler initial conditions."""
         # Add an x offset
@@ -526,7 +537,7 @@ class Renderer:
             msg = self.font.render("TOUCHDOWN CONFIRMED - R to Reset", True, WHITE)
             self.screen.blit(msg, (SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 10))
 
-        if self.env.crashed:
+        if self.env.crashed or self.env.max_step_exceeded:
             s = pygame.Surface((SCREEN_WIDTH, 60), pygame.SRCALPHA)
             s.fill((255, 0, 0, 100))
             self.screen.blit(s, (0, SCREEN_HEIGHT / 2 - 30))
