@@ -108,23 +108,6 @@ class SARSAAgent:
 
     def decay_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-
-    # TODO: DELETEME
-    # def save(self, filename="sarsa_q_table"):
-    #     """Saves the Q-table to a file."""
-    #     with open(f"{filename}.pkl", "wb") as f:
-    #         pickle.dump(dict(self.q_table), f)
-
-    # # TODO: Load q table from .npy file instead of pickle
-    # def load(self, filename="sarsa_q_table") -> 'SARSAAgent':
-    #     """Loads the Q-table from a file."""
-    #     if not os.path.exists(f"{filename}.pkl"):
-    #         print("No saved Q-table found. Starting with an empty table.")
-    #         return self
-    #     with open(f"{filename}.pkl", "rb") as f:
-    #         loaded_q_table = pickle.load(f)
-    #         self.q_table = defaultdict(lambda: np.zeros(self.n_actions), loaded_q_table)
-    #     return self
     
     def save(self, path):
         np.save(self.q_table, path)

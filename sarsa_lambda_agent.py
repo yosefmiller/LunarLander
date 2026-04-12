@@ -51,10 +51,6 @@ class TileCoder:
         
         return tiles
     
-        # Agent
-    state_low = [-1.5, -0.5, -2, -2, -1.0, -5]
-    state_high = [1.5, 1.5, 2, 2, 1.0, 5]
-
 class SARSALambdaAgent:
     """ 
     SARSA(λ) agent with tile coding for function approximation to solve the Lunar Lander problem.

@@ -3,8 +3,7 @@ import sarsa_agent
 import qlearning_agent
 import sarsa_lambda_agent
 import DQN_agent
-# from lunar_lander_env import LunarLanderEnv, Renderer
-from upgraded_lunar_lander_env import LunarLanderEnv, Renderer
+from lunar_lander_env import LunarLanderEnv, Renderer
 from utils import plot_learning_curve
 from scipy import stats
 from scipy.stats import f_oneway
