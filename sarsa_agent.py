@@ -8,9 +8,8 @@ from tqdm import tqdm
 from utils import plot_learning_curve
 from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 
-
 class SARSAAgent:
-    def __init__(self, n_actions, alpha=0.1, gamma=0.99, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.05):
+    def __init__(self, n_actions=4, alpha=0.1, gamma=0.99, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.05):
         """
         SARSA Agent for the Lunar Lander environment.
 
@@ -45,26 +44,26 @@ class SARSAAgent:
         # np.digitize returns the bin index. Out of bounds values go into the first/last bins.
         # We increase resolution for y and vy as they are critical for the landing criteria.
         x_bins = np.concatenate([
-                    np.array([-0.6, -0.3, -0.15, -0.1]),
-                    np.linspace(-0.1, 0.1, 5),   # high resolution near pad
-                    np.array([0.1, 0.15, 0.3, 0.6])
+                    np.array([-0.6, -0.3, -0.25]),
+                    np.linspace(-0.2, 0.2, 7),   # high resolution near pad
+                    np.array([0.25, 0.3, 0.6])
                 ])
         y_bins = np.concatenate([
                     np.linspace(0, 0.01, 4),      # landing zone precision
                     np.array([0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 0.8])
                 ])
-        vx_bins = np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3])
+        vx_bins = np.array([-0.5, -0.3, -0.1, -0.02, 0.02, 0.1, 0.3, 0.5])
         vy_bins = np.concatenate([
-                    np.array([-0.3, -0.1, -0.05]),
-                    np.linspace(-0.05, 0.05, 6),   # critical landing region
-                    np.array([0.05, 0.1, 0.3])
+                    np.array([-0.5, -0.3, -0.1, -0.05]),
+                    np.linspace(-0.05, 0.05, 5),   # critical landing region
+                    np.array([0.05, 0.1, 0.3, 0.5])
                 ])
         angle_bins = np.concatenate([
-                        np.array([-0.5, -0.2]),
+                        np.array([-1.0, -0.5, -0.2]),
                         np.linspace(-0.2, 0.2, 7),   # upright precision
-                        np.linspace(0.2, 0.5)
+                        np.array([0.2, 0.5, 1.0])
                     ])
-        ang_vel_bins = np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5])
+        ang_vel_bins = np.array([-1.0, -0.5, -0.2, -0.05, 0.05, 0.2, 0.5, 1.0])
 
         self.bins = {
             'x': x_bins,
@@ -74,15 +73,6 @@ class SARSAAgent:
             'theta': angle_bins,
             'omega': ang_vel_bins
         }
-
-        # self.bins = {
-        #     'x': np.array([-0.6, -0.3, -0.15, 0.15, 0.3, 0.6]),  # 7 bins
-        #     'y': np.array([0.02, 0.05, 0.1, 0.25, 0.5, 0.8]),  # 7 bins
-        #     'vx': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
-        #     'vy': np.array([-0.3, -0.1, -0.02, 0.02, 0.1, 0.3]),  # 7 bins
-        #     'theta': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5]),  # 7 bins
-        #     'omega': np.array([-0.5, -0.2, -0.05, 0.05, 0.2, 0.5])  # 7 bins
-        # }
 
     def discretize(self, state):
         """Converts the continuous state dataclass into a discrete tuple, ignoring fuel."""
@@ -119,21 +109,29 @@ class SARSAAgent:
     def decay_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    def save(self, filename="sarsa_q_table"):
-        """Saves the Q-table to a file."""
-        with open(f"{filename}.pkl", "wb") as f:
-            pickle.dump(dict(self.q_table), f)
+    # TODO: DELETEME
+    # def save(self, filename="sarsa_q_table"):
+    #     """Saves the Q-table to a file."""
+    #     with open(f"{filename}.pkl", "wb") as f:
+    #         pickle.dump(dict(self.q_table), f)
 
-    # TODO: Load q table from .npy file instead of pickle
-    def load(self, filename="sarsa_q_table") -> 'SARSAAgent':
-        """Loads the Q-table from a file."""
-        if not os.path.exists(f"{filename}.pkl"):
-            print("No saved Q-table found. Starting with an empty table.")
-            return self
-        with open(f"{filename}.pkl", "rb") as f:
-            loaded_q_table = pickle.load(f)
-            self.q_table = defaultdict(lambda: np.zeros(self.n_actions), loaded_q_table)
-        return self
+    # # TODO: Load q table from .npy file instead of pickle
+    # def load(self, filename="sarsa_q_table") -> 'SARSAAgent':
+    #     """Loads the Q-table from a file."""
+    #     if not os.path.exists(f"{filename}.pkl"):
+    #         print("No saved Q-table found. Starting with an empty table.")
+    #         return self
+    #     with open(f"{filename}.pkl", "rb") as f:
+    #         loaded_q_table = pickle.load(f)
+    #         self.q_table = defaultdict(lambda: np.zeros(self.n_actions), loaded_q_table)
+    #     return self
+    
+    def save(self, path):
+        np.save(self.q_table, path)
+
+    def load(self, path):
+        qtable = np.load(path, allow_pickle=True).item()
+        self.q_table = defaultdict(lambda: np.zeros(self.n_actions), qtable)
 
     def train(self,
               env, 
@@ -141,10 +139,9 @@ class SARSAAgent:
               agent_type='SARSA', 
               chkpt_path="SARSA_Agent_checkpoints/agent1", 
               debug=False,
-              log_every_episodes=500) -> list:
+              logging_rate=500) -> list:
         rewards_history = []
-        avg_rewards_per_interval = []
-        result_history = {'crashed': 0, 'landed': 0, 'exceeded_max_steps': 0}
+        result_history = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
         episode_durations = []
         total_bins = len(self.bins['x']) * len(self.bins['y']) * len(self.bins['vx']) * len(self.bins['vy']) * len(self.bins['theta']) * len(self.bins['omega'])
         
@@ -152,12 +149,13 @@ class SARSAAgent:
         os.makedirs(chkpt_path, exist_ok=True)
         ckpt_interval = max(1, episodes // 3)
 
-        print(f"Training for {episodes} episodes...")
+        if debug:
+            print(f"Training for {episodes} episodes...")
 
         # Training duration
         start = time.time()      
 
-        for ep in range(episodes):
+        for ep in tqdm(range(episodes), disable=debug):
             state = env.reset()
             state_tuple = self.discretize(state)
             action = self.act(state_tuple)
@@ -196,35 +194,36 @@ class SARSAAgent:
             rewards_history.append(total_reward)
             
             # Log stats
-            if debug and (ep + 1) % log_every_episodes == 0:
-                avg_reward = np.mean(rewards_history[-log_every_episodes:])
-                avg_duration = np.mean(episode_durations[-log_every_episodes:])
+            if (ep + 1) % logging_rate == 0:
+                avg_reward = np.mean(rewards_history[-logging_rate:])
+                avg_duration = np.mean(episode_durations[-logging_rate:])
                 coverage = (len(self.q_table) / total_bins) * 100
-                print(f"Episode {ep+1:04d}/{episodes}: Epsilon: {self.epsilon:.3f} | Last {log_every_episodes} Avg Reward: {avg_reward:.1f} | Q-Table Coverage: {coverage:.2f}% | Last {log_every_episodes} Avg Episode Duration: {avg_duration:.1f} steps")
-                avg_rewards_per_interval.append(avg_reward)
+                if debug:
+                    print(f"Episode {ep+1:04d}/{episodes}: Epsilon: {self.epsilon:.3f} | Last {logging_rate} Avg Reward: {avg_reward:.1f} | Q-Table Coverage: {coverage:.2f}% | Last {logging_rate} Avg Episode Duration: {avg_duration:.1f} steps")
                 episode_durations = []
 
-            # Save Q table checkpoints
+            # Save checkpoints for learning analysis
             if (ep + 1) % ckpt_interval == 0:
-                np.save(f"{chkpt_path}/{agent_type}_ep_{ep+1:06d}.npy", dict(self.q_table))
+                np.save(f"{chkpt_path}/ckpt_ep_{ep+1:06d}.npy", dict(self.q_table))
 
         time_elapsed = time.time() - start
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
         print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
 
-        # save final checkpoint and avg rewards
-        np.save(f"{chkpt_path}/{agent_type}_trained.npy", dict(self.q_table))
-        np.save(f"{chkpt_path}/{agent_type}_avg_rewards.npy", avg_rewards_per_interval)
+        # save final checkpoint, episode returns, and landing results
+        np.save(f"{chkpt_path}/best_qtable_values.npy", dict(self.q_table))
+        np.save(f"{chkpt_path}/training_returns.npy", rewards_history)
+        np.save(f"{chkpt_path}/training_landing_results.npy", result_history)
 
-        return avg_rewards_per_interval
+        return rewards_history
 
-    def evaluate(self, env, episodes=100):
+    def evaluate(self, env, episodes=100, debug=False):
         """Runs the trained agent and returns average reward."""
         total_rewards = []
         ep_durations = []
         results = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
         
-        for ep in tqdm(range(episodes)):
+        for ep in tqdm(range(episodes), disable=(not debug)):
             state = env.reset()
             state_tuple = self.discretize(state)
             done = False
@@ -246,13 +245,15 @@ class SARSAAgent:
         
         avg_reward = np.mean(total_rewards)
         avg_duration = np.mean(ep_durations)
-        print(f"Average Reward over {episodes} episodes: {avg_reward:.1f}")
-        print(f"Average Episode Duration: {avg_duration:.1f} steps")
-        print(f"Results:\n Max Steps Exceeded={results['exceeded_max_steps']}, Crashed={results['crashed']}, Landed={results['landed']}")
+        if debug:
+            print(f"Average Reward over {episodes} episodes: {avg_reward:.1f}")
+            print(f"Average Episode Duration: {avg_duration:.1f} steps")
+            print(f"Results:\n Max Steps Exceeded={results['exceeded_max_steps']}, Crashed={results['crashed']}, Landed={results['landed']}")
+
+        return total_rewards, avg_duration, results
 
     def show_progress(self, env, episodes=5, save_gif=False, gif_path="dqn_agent_progress.gif"):
         """Runs the trained agent and renders the environment."""
-        print("Launching Pygame to evaluate trained agent...")
         renderer = Renderer(env)
         
         for ep in range(episodes):
@@ -260,8 +261,6 @@ class SARSAAgent:
             state_tuple = self.discretize(state)
             done = False
             total_reward = 0
-            
-            print(f"\nEvaluating Episode {ep + 1}...")
             
             while not done:
                 renderer.clock.tick(60) # Lock to 60 FPS for viewing
@@ -281,7 +280,7 @@ class SARSAAgent:
                 
                 renderer.render(action)
                 
-            print(f"Episode Ended. Total Reward: {total_reward:.1f}")
+            print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
             
         pygame.quit()
@@ -289,19 +288,19 @@ class SARSAAgent:
 if __name__ == "__main__":
     # Environment
     num_actions = 4
-    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
-    # lunar_env = LLE_XOffset()
-    # lunar_env = LLE_InitialVelocity()
-    lunar_env = LunarLanderEnv()
+    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
+    # lunar_env = LLE_XOffset(debug=True)
+    # lunar_env = LLE_InitialVelocity(debug=True)
+    lunar_env = LunarLanderEnv(debug=True)
 
     # Agent
     sarsa_agent = SARSAAgent(n_actions=num_actions)
 
     # Train the agent and save the Q-table
-    logging_interval = 500
-    rewards = sarsa_agent.train(lunar_env, episodes=50000, debug=True, log_every_episodes=logging_interval)
-    episode_intervals = logging_interval = 500*np.ones(len(rewards))
-    plot_learning_curve(rewards, episode_intervals=episode_intervals, title="Simple Lunar Lander")
+    rewards = sarsa_agent.train(lunar_env,
+                                episodes=50000,
+                                debug=True)
+    plot_learning_curve(rewards, agent_type="SARSA", ylim=(-150, 200))
 
     # Evaluate and render the trained agent
     sarsa_agent.evaluate(lunar_env, episodes=1000)

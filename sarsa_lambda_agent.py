@@ -1,4 +1,3 @@
-
 from utils import plot_learning_curve
 from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 import pygame
@@ -52,12 +51,20 @@ class TileCoder:
         
         return tiles
     
+        # Agent
+    state_low = [-1.5, -0.5, -2, -2, -1.0, -5]
+    state_high = [1.5, 1.5, 2, 2, 1.0, 5]
+
 class SARSALambdaAgent:
     """ 
     SARSA(λ) agent with tile coding for function approximation to solve the Lunar Lander problem.
     This agent uses eligibility traces to allow for more efficient learning from sequences of actions and rewards.
     """
-    def __init__(self, state_low, state_high, actions=4, alpha=0.1):
+    def __init__(self, 
+                 actions=4,
+                 alpha=0.1,
+                 state_low=[-1.5, -0.5, -2, -2, -1.0, -5],
+                 state_high=[1.5, 1.5, 2, 2, 1.0, 5]):
         self.actions = actions        
         self.tc = TileCoder(state_low, state_high)
         
@@ -147,12 +154,18 @@ class SARSALambdaAgent:
             self.epsilon * self.epsilon_decay
         )
 
+    def save(self, path):
+        np.save(dict(self.w), path)
+
+    def load(self, path):
+        self.w = np.load(path, allow_pickle=True).item()
+
     def train(self,
               env,
-              episodes=5000,
+              episodes=25000,
               chkpt_path="SARSA_Lambda_Agent_checkpoints/agent1",
               debug=False,
-              log_every_episodes=500) -> list:
+              logging_rate=50) -> list:
         """
         Train the given agent in the specified environment for a certain number of episodes.
         The rewards received in each episode are recorded to analyze the learning progress of the agent.
@@ -165,20 +178,20 @@ class SARSALambdaAgent:
         :return: A list of total rewards received in each episode, which can be used to analyze the learning progress of the agent.
         """
         rewards_history = []
-        avg_rewards_per_interval = []
-        result_history = {'crashed': 0, 'landed': 0, 'exceeded_max_steps': 0}
+        result_history = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
         episode_durations = []
 
         # Save Q table periodically
         os.makedirs(chkpt_path, exist_ok=True)
         ckpt_interval = max(1, episodes // 3)
 
-        print(f"Training for {episodes} episodes...")
+        if debug:
+            print(f"Training for {episodes} episodes...")
 
         # Training duration
         start = time.time()   
 
-        for ep in range(episodes):
+        for ep in tqdm(range(episodes), disable=debug):
             obs = env.reset()
             tiles = self.tc.get_tiles(obs)
             action = self.choose_action(tiles)
@@ -218,58 +231,62 @@ class SARSALambdaAgent:
             rewards_history.append(total_reward)
 
             # Log stats
-            if debug and (ep + 1) % log_every_episodes == 0:
-                avg_reward = np.mean(rewards_history[-log_every_episodes:])
-                avg_duration = np.mean(episode_durations[-log_every_episodes:])
-                print(f"Episode {ep+1:04d}/{episodes}: Epsilon: {self.epsilon:.3f} | Last {log_every_episodes} Avg Reward: {avg_reward:.1f} | Last {log_every_episodes} Avg Episode Duration: {avg_duration:.1f} steps")
-                avg_rewards_per_interval.append(avg_reward)
+            if (ep + 1) % logging_rate == 0:
+                avg_reward = np.mean(rewards_history[-logging_rate:])
+                avg_duration = np.mean(episode_durations[-logging_rate:])
+                if debug:
+                    print(f"Episode {ep+1:04d}/{episodes}: Epsilon: {self.epsilon:.3f} | Last {logging_rate} Avg Reward: {avg_reward:.1f} | Last {logging_rate} Avg Episode Duration: {avg_duration:.1f} steps")
                 episode_durations = []
 
-            # Save Q table checkpoints
+            # Save checkpoints for learning analysis
             if (ep + 1) % ckpt_interval == 0:
-                np.save(f"{chkpt_path}/SARSALambda_ep_{ep+1:06d}.npy", dict(self.w))
+                np.save(f"{chkpt_path}/ckpt_ep_{ep+1:06d}.npy", dict(self.w))
 
         time_elapsed = time.time() - start
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
         print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
 
-        # save final checkpoint and avg rewards
-        np.save(f"{chkpt_path}/SARSALambda_trained.npy", dict(self.w))
-        np.save(f"{chkpt_path}/SARSALambda_avg_rewards.npy", avg_rewards_per_interval)
+        # save final checkpoint, episode returns, and landing results
+        np.save(f"{chkpt_path}/best_weights.npy", dict(self.w))
+        np.save(f"{chkpt_path}/training_returns.npy", rewards_history)
+        np.save(f"{chkpt_path}/training_landing_results.npy", result_history)
 
-        return avg_rewards_per_interval
+        return rewards_history
 
-    def evaluate(self, env, episodes=100):
-            """Runs the trained agent and returns average reward."""
-            total_rewards = []
-            ep_durations = []
-            results = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
-            
-            for ep in tqdm(range(episodes)):
-                obs = env.reset()
+    def evaluate(self, env, episodes=100, debug=False):
+        """Runs the trained agent and returns average reward."""
+        total_rewards = []
+        ep_durations = []
+        results = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
+        
+        for ep in tqdm(range(episodes), disable=(not debug)):
+            obs = env.reset()
+            tiles = self.tc.get_tiles(obs)
+            done = False
+            total_reward = 0
+            ep_duration = 0
+
+            while not done:
+                action = self.choose_action(tiles, evaluate=True)
+                obs, reward, done, result, _ = env.step(action)
                 tiles = self.tc.get_tiles(obs)
-                done = False
-                total_reward = 0
-                ep_duration = 0
-
-                while not done:
-                    action = self.choose_action(tiles, evaluate=True)
-                    obs, reward, done, result, _ = env.step(action)
-                    tiles = self.tc.get_tiles(obs)
-                    total_reward += reward            
-                    ep_duration += 1
-                    
-                ep_durations.append(ep_duration)
-                results['crashed'] += int(result[0])
-                results['landed'] += int(result[1])
-                results['exceeded_max_steps'] += int(result[2])
-                total_rewards.append(total_reward)
-            
-            avg_reward = np.mean(total_rewards)
-            avg_duration = np.mean(ep_durations)
+                total_reward += reward            
+                ep_duration += 1
+                
+            ep_durations.append(ep_duration)
+            results['crashed'] += int(result[0])
+            results['landed'] += int(result[1])
+            results['exceeded_max_steps'] += int(result[2])
+            total_rewards.append(total_reward)
+        
+        avg_reward = np.mean(total_rewards)
+        avg_duration = np.mean(ep_durations)
+        if debug:
             print(f"Average Reward over {episodes} episodes: {avg_reward:.1f}")
             print(f"Average Episode Duration: {avg_duration:.1f} steps")
             print(f"Results:\n Max Steps Exceeded={results['exceeded_max_steps']}, Crashed={results['crashed']}, Landed={results['landed']}")
+
+        return total_rewards, avg_duration, results
 
     def show_progress(self, env, episodes=5):
         """
@@ -280,9 +297,8 @@ class SARSALambdaAgent:
         :param num_episodes: The number of episodes to run for evaluation.
         """
         renderer = Renderer(env)
-        self.epsilon = 0
 
-        for i in range(episodes):
+        for ep in range(episodes):
             obs = env.reset()
             tiles = self.tc.get_tiles(obs)
             done = False
@@ -303,7 +319,7 @@ class SARSALambdaAgent:
                 total_reward += reward            
                 renderer.render(action)
 
-            print(f"Episode {i}: Total Reward={total_reward:.1f}")
+            print(f"Episode {ep + 1}: Total Reward={total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
             
         pygame.quit()
@@ -312,22 +328,17 @@ class SARSALambdaAgent:
 if __name__ == "__main__":
     # Environment
     num_actions = 4  # Main engine + left/right thrusters
-    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
-    # lunar_env = LLE_XOffset()
-    # lunar_env = LLE_InitialVelocity()
-    lunar_env = LunarLanderEnv()
+    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
+    # lunar_env = LLE_XOffset(debug=True)
+    # lunar_env = LLE_InitialVelocity(debug=True)
+    lunar_env = LunarLanderEnv(debug=True)
 
     # Agent
-    state_low = [-1.5, -0.5, -2, -2, -1.0, -5]
-    state_high = [1.5, 1.5, 2, 2, 1.0, 5]
-
-    agent = SARSALambdaAgent(state_low, state_high, actions=num_actions)
+    agent = SARSALambdaAgent(actions=num_actions)
 
     # Train the agent
-    logging_interval = 50
-    rewards = agent.train(lunar_env, episodes=20000, debug=True, log_every_episodes=logging_interval)
-    episode_intervals = logging_interval*np.ones(len(rewards))
-    plot_learning_curve(rewards, episode_intervals=episode_intervals, agent_type='SARSA Lambda (with Tile Coding)')
+    rewards = agent.train(lunar_env, episodes=25000, debug=True)
+    plot_learning_curve(rewards, agent_type="SARSA Lambda (with Tile Coding)")
 
     # Evaluate and render the trained agent
     agent.evaluate(lunar_env, episodes=1000)

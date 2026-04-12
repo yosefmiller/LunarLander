@@ -29,27 +29,38 @@ class QLearningAgent(SARSAAgent):
         new_q = current_q + self.alpha * (reward + self.gamma * next_q - current_q)
         self.q_table[state_tuple][action] = new_q
 
+    def train(self,
+              env,
+              episodes=1000,
+              agent_type='QLearning',
+              chkpt_path="QLearning_Agent_checkpoints/agent1",
+              debug=False,
+              logging_rate=500) -> list:
+        
+        """ Call SARSA train method but with Q-Learning specific parameters. """
+        return super().train(env=env,
+                             episodes=episodes,
+                             agent_type=agent_type,
+                             chkpt_path=chkpt_path,
+                             debug=debug,
+                             logging_rate=logging_rate)
+
 if __name__ == "__main__":
     # Environment
     num_actions = 4  # Main engine + left/right thrusters
-    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions)
-    # lunar_env = LLE_XOffset()
-    # lunar_env = LLE_InitialVelocity()
-    lunar_env = LunarLanderEnv()
+    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
+    # lunar_env = LLE_XOffset(debug=True)
+    # lunar_env = LLE_InitialVelocity(debug=True)
+    lunar_env = LunarLanderEnv(debug=True)
 
     # Agent
     qlearning_agent = QLearningAgent(n_actions=num_actions)
 
     # Train the agent and save the Q-table
-    logging_interval = 500
     rewards = qlearning_agent.train(lunar_env, 
                                     episodes=50000, 
-                                    agent_type='Q-Learning', 
-                                    chkpt_path="QLearning_Agent_checkpoints/agent1", 
-                                    debug=True,
-                                    log_every_episodes=logging_interval)
-    episode_intervals = logging_interval*np.ones(len(rewards))
-    plot_learning_curve(rewards, episode_intervals=episode_intervals, title="Simple Lunar Lander")
+                                    debug=True)
+    plot_learning_curve(rewards, agent_type='Q-Learning', ylim=(-150, 200))
 
     # Evaluate and render the trained agent
     qlearning_agent.evaluate(lunar_env, episodes=1000)

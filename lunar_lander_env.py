@@ -92,7 +92,7 @@ class LunarLanderEnv:
     moment_of_inertia: float
 
 
-    def __init__(self, max_number_of_steps=1000, debug=True):
+    def __init__(self, max_number_of_steps=1000, debug=False):
         self.max_number_of_steps = max_number_of_steps
         self.debug=debug
         self.reset()
