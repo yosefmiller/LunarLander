@@ -1,17 +1,19 @@
+from collections.abc import Collection
+from typing import Tuple, List, Type
+
 import torch
 import torch.nn as nn
 import numpy as np
 import pygame
 import os
 import time
-import threading
-import queue
 from tqdm import tqdm
 from utils import plot_learning_curve
-from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
+from lunar_lander_env import LunarLanderEnv, VectorizedEnv, Renderer, EpisodeResult
+from base_agent import BaseAgent
 
 class QNetwork(nn.Module):
-    """ 
+    """
     A simple feedforward neural network for approximating Q-values.
     """
     def __init__(self, state_size, action_size, hidden_size=256):
@@ -48,8 +50,8 @@ class QNetwork(nn.Module):
                 layer.reset_parameters()
 
 class ReplayBuffer:
-    """ 
-    A simple replay buffer for storing and sampling experiences. 
+    """
+    A simple replay buffer for storing and sampling experiences.
     """
     def __init__(self, capacity, state_dim, min_size=1000):
         self.capacity = capacity
@@ -109,21 +111,26 @@ class ReplayBuffer:
     def __len__(self):
         return self.size
 
-class DQNAgent:
-    """ 
-    A Deep Q-Network (DQN) agent for the Lunar Lander environment. This implementation includes experience replay, 
+class DQNAgent(BaseAgent):
+    """
+    A Deep Q-Network (DQN) agent for the Lunar Lander environment. This implementation includes experience replay,
     target network updates, and epsilon-greedy action selection with optional decay.
     """
-    def __init__(self, 
-                num_state_features=8,  # Use all features including fuel!
+    def __init__(self,
+                num_state_features=7,  # Use all features including fuel!
                 num_actions=4,
                 alpha=1e-4,
                 gamma=0.99,
-                epsilon_config={'start': 1.0, 'end': 0.05, 'decay': True, 'decay_rate': 0.99995},
+                epsilon_config=None,
                 update_freq=4,
-                replay_buffer_config={'max_size': 500000, 'min_size': 10000},
+                replay_buffer_config=None,
                 target_update_freq=120,
                 minibatch_size=256):
+        if epsilon_config is None:
+            epsilon_config = {'start': 1.0, 'end': 0.05, 'decay': True, 'decay_rate': 0.999995}
+        if replay_buffer_config is None:
+            replay_buffer_config = {'max_size': 500000, 'min_size': 10000}
+
         self.num_state_features = num_state_features
         self.num_actions = num_actions
         self.alpha = alpha
@@ -156,16 +163,20 @@ class DQNAgent:
         # Keep track of the number of completed training steps
         self.steps_done = 0
 
-    def act(self, state, eval=False):
+    @property
+    def name(self) -> str:
+        return "DQN"
+
+    def act(self, state, eval=False) -> int:
         if not eval and np.random.rand() < self.epsilon:
-            return np.random.randint(self.num_actions)
+            return int(np.random.randint(0, self.num_actions))
         else:
             with torch.no_grad():
                 state_tensor = torch.FloatTensor(state).to(self.q_network.device)
-                q_values = self.q_network(state)
-                return torch.argmax(q_values).cpu().numpy()
-            
-    def act_batch(self, states, eval=False):
+                q_values = self.q_network(state_tensor)
+                return int(torch.argmax(q_values).item())
+
+    def act_batch(self, states, eval=False) -> Collection[int]:
         """Select actions for a batch of states with per-environment epsilon-greedy."""
         batch_size = len(states)
         
@@ -184,7 +195,7 @@ class DQNAgent:
         actions[explore_mask] = np.random.randint(0, self.num_actions, size=np.sum(explore_mask))
         
         # Greedy actions for exploitation
-        if not explore_mask.all():
+        if not np.all(explore_mask):
             with torch.no_grad():
                 states_tensor = torch.FloatTensor(states[~explore_mask]).to(self.q_network.device)
                 q_values = self.q_network(states_tensor)
@@ -226,13 +237,20 @@ class DQNAgent:
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def save(self, path):
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
         torch.save(self.q_network.state_dict(), path)
 
     def load(self, path):
-        self.q_network.load_state_dict(torch.load(path))
+        weights_path = path if path.endswith((".pth", ".pt")) else os.path.join(path, "best_weights.pth")
+        state_dict = torch.load(weights_path, map_location=self.q_network.device)
+        self.q_network.load_state_dict(state_dict)
+        self.target_network.load_state_dict(self.q_network.state_dict())
+        return self
 
     def train(self,
-              env,
+              env: Type[LunarLanderEnv],
               episodes=3000,
               max_steps=1000,
               num_parallel_envs=8,
@@ -245,20 +263,14 @@ class DQNAgent:
         if debug:
             print(f"Using device: {self.q_network.device}")
 
-        # Save stats for post-training analysis
-        completed_episodes = []
-        avg_rewards_per_interval = []
-        avg_losses = []
-        result_history = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
-        max_avg_reward = 0.0
+        # Save episode history: one dict per completed episode
+        episode_history: List[EpisodeResult] = []
 
         # Precompute total training steps
         num_training_steps = episodes * max_steps // num_parallel_envs
 
-        # Save Q network weights periodically
         os.makedirs(chkpt_path, exist_ok=True)
         ckpt_interval = max(1, num_training_steps // 3)
-        self.ckpt_writer = AsyncCheckpointWriter(max_queue_size=4)
 
         # Create vectorized environments
         vec_env = VectorizedEnv(env, num_envs=num_parallel_envs, debug=debug)
@@ -266,18 +278,12 @@ class DQNAgent:
 
         # Per-env accumulators (vectorized)
         total_rewards = np.zeros(num_parallel_envs, dtype=np.float32)
-        ep_durations = np.zeros(num_parallel_envs, dtype=np.int32)
-        return_history = {i: [] for i in range(num_parallel_envs)}
-
-        # logging Interval accumulators
-        interval_episode_returns_sum = 0.0
-        interval_episode_durations_sum = 0
-        interval_episode_count = 0
+        interval_history: List[EpisodeResult] = []
         interval_loss_sum = 0.0
         interval_loss_count = 0
-
-        # Optional wall-time logging
-        last_log_time = time.monotonic()
+        completed_episodes = 0
+        next_log_episode = max(1, logging_rate)
+        next_log_time = time.monotonic() + log_every_seconds
 
         if debug:
             print(f"Training for {episodes} episodes...")
@@ -290,97 +296,74 @@ class DQNAgent:
             actions = self.act_batch(obs)
 
             # Step envs
-            next_obs, rewards, dones, infos, _ = vec_env.step(actions)
+            next_obs, rewards, dones, infos = vec_env.step(actions)
 
             # Batch push transitions to replay buffer
             self.replay_buffer.batch_push(obs, actions, rewards, next_obs, dones)
 
             # Update per-env accumulators
             total_rewards += rewards
-            ep_durations += 1
 
-            # Handle terminations via mask (vectorized)
+            # Collect completed episodes immediately; vectorized envs may finish several at once.
             if np.any(dones):
                 done_mask = dones.astype(bool)
-
-                # Aggregate per-episode stats into interval sums
-                interval_episode_returns_sum += float(total_rewards[done_mask].sum())
-                interval_episode_durations_sum += int(ep_durations[done_mask].sum())
-                interval_episode_count += int(done_mask.sum())
-
-                # Per environment returns
                 idx = np.where(done_mask)[0]
                 for i, val in zip(idx, total_rewards[done_mask]):
-                    return_history[i].append(float(val))
-
-                # Sum results for done envs
-                if len(infos) == num_parallel_envs:
-                    # Vectorized-ish accumulation
-                    crashed = sum(int(infos[i][0]) for i in range(num_parallel_envs) if done_mask[i])
-                    landed = sum(int(infos[i][1]) for i in range(num_parallel_envs) if done_mask[i])
-                    exceeded = sum(int(infos[i][2]) for i in range(num_parallel_envs) if done_mask[i])
-                    result_history['crashed'] += crashed
-                    result_history['landed'] += landed
-                    result_history['exceeded_max_steps'] += exceeded
+                    # noinspection PyTypeChecker
+                    episode_result: EpisodeResult = infos[i]
+                    episode_result['reward'] = float(val)
+                    episode_history.append(episode_result)
+                    interval_history.append(episode_result)
+                    completed_episodes += 1
 
                 # Reset only done env accumulators
                 total_rewards[done_mask] = 0.0
-                ep_durations[done_mask] = 0
 
             obs = next_obs
 
             # Periodic optimization
-            if self.steps_done % self.update_freq == 0:
+            if (self.steps_done + 1) % self.update_freq == 0:
                 self.optimize_q_network()
-                interval_loss_count += 1
                 interval_loss_sum += getattr(self, 'running_loss', 0.0)
+                interval_loss_count += 1
                 self.running_loss = 0.0
 
             # Target network update
-            if self.steps_done % self.target_update_freq == 0:
+            if (self.steps_done + 1) % self.target_update_freq == 0:
                 self.target_network.load_state_dict(self.q_network.state_dict())
 
-            # Logging control: time-based
-            do_log = False
-            if time_based_logging:
-                now = time.monotonic()
-                if now - last_log_time >= log_every_seconds:
-                    do_log = True
-                    last_log_time = now
-            else:
-                if (step + 1) % logging_rate == 0:
-                    do_log = True
+            should_log = False
+            if interval_history:
+                if time_based_logging:
+                    should_log = time.monotonic() >= next_log_time
+                else:
+                    should_log = completed_episodes >= next_log_episode
 
-            if do_log:
-                avg_reward = (interval_episode_returns_sum / interval_episode_count) if interval_episode_count > 0 else 0.0
-                avg_duration = (interval_episode_durations_sum / interval_episode_count) if interval_episode_count > 0 else 0.0
-                avg_loss = (interval_loss_sum / max(1, interval_loss_count))
-
-                completed_episodes.append(interval_episode_count)
-                avg_rewards_per_interval.append(avg_reward)
-                avg_losses.append(avg_loss)
+            if should_log:
+                avg_loss = interval_loss_sum / max(1, interval_loss_count)
+                stats = [
+                    f"Step {step + 1}/{num_training_steps}",
+                    f"Episodes: {completed_episodes}",
+                    f"Buffer: {len(self.replay_buffer)}",
+                    f"Epsilon: {self.epsilon:.3f}",
+                    f"Avg Q Loss: {avg_loss:.3f}",
+                    *self._calculate_stats(interval_history),
+                ]
                 if debug:
-                    print(f"Step {step+1}/{num_training_steps}: Epsilon: {self.epsilon:.3f} | Avg Ep Reward: {avg_reward:.1f} | Avg Q Loss: {avg_loss:.3f} | Avg Ep Len: {avg_duration:.1f} | Episodes Completed: {interval_episode_count}")
+                    print(" | ".join(stats))
 
-                # Reset interval accumulators
-                interval_episode_returns_sum = 0.0
-                interval_episode_durations_sum = 0
-                interval_episode_count = 0
+                interval_history.clear()
                 interval_loss_sum = 0.0
                 interval_loss_count = 0
-
-                # Save the Q network weights that yield the highest avg rewards
-                if avg_reward > max_avg_reward:
-                    checkpoint_path = f"{chkpt_path}/best_weights.pth"
-                    current_weights = self.q_network.state_dict()
-                    self.ckpt_writer.enqueue(checkpoint_path, current_weights)
-                    max_avg_reward = avg_reward
+                if time_based_logging:
+                    next_log_time = time.monotonic() + log_every_seconds
+                else:
+                    next_log_episode += max(1, logging_rate)
 
             # Also save periodic checkpoints for learning analysis
             if (step + 1) % ckpt_interval == 0:
                 checkpoint_path = f"{chkpt_path}/ckpt_step_{step+1:07d}.pth"
-                current_weights = self.q_network.state_dict()
-                self.ckpt_writer.enqueue(checkpoint_path, current_weights)
+                torch.save(self.q_network.state_dict(), checkpoint_path)
 
             # Epsilon decay once per vectorized step
             if len(self.replay_buffer) > self.replay_buffer.min_size:
@@ -390,67 +373,43 @@ class DQNAgent:
 
         time_elapsed = time.time() - start
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
-        print(f"Results:\n Max Steps Exceeded={result_history['exceeded_max_steps']}, Crashed={result_history['crashed']}, Landed={result_history['landed']}")
 
-        # Final save of Q network weights
-        avg_reward = (interval_episode_returns_sum / interval_episode_count) if interval_episode_count > 0 else 0.0
-        if avg_reward > max_avg_reward:
-            final_weights_path = f"{chkpt_path}/best_weights.pth"
-            torch.save(self.q_network.state_dict(), final_weights_path)
-        
-        # Final save of stats
-        env_episodes = [len(returns) for returns in return_history.values()]
-        min_episodes = min(env_episodes)  # truncate to the minimum episodes completed
-        avg_returns_across_envs = np.array([returns[:min_episodes] for returns in return_history.values()]).mean(axis=0)
+        if episode_history:
+            print(" | ".join(self._calculate_stats(episode_history)))
 
-        np.save(f"{chkpt_path}/training_returns.npy", avg_returns_across_envs)
-        np.save(f"{chkpt_path}/completed_episodes_per_env.npy", env_episodes)
-        np.save(f"{chkpt_path}/training_landing_results.npy", result_history)
-        np.save(f"{chkpt_path}/training_Q_network_losses.npy", np.array(avg_losses, dtype=np.float32))
-        np.save(f"{chkpt_path}/episodes_per_training_interval.npy", np.array(completed_episodes, dtype=np.float32))
+        torch.save(self.q_network.state_dict(), f"{chkpt_path}/best_weights.pth")
+        np.save(f"{chkpt_path}/training_history.npy", np.array(episode_history, dtype=object))
 
-        # Stop the checkpoint writer
-        self.ckpt_writer.stop(wait=True)
+        return episode_history
 
-        return avg_returns_across_envs
-    
-    def evaluate(self, env, episodes=100, debug=False):
-        """ 
-        Runs the trained agent and returns average reward.
+    def evaluate(self, env: LunarLanderEnv, episodes=100, debug=False) -> List[EpisodeResult]:
         """
-        total_rewards = []
-        ep_durations = []
-        results = {'exceeded_max_steps': 0, 'crashed': 0, 'landed': 0}
-        
+        Runs the trained agent and returns episode history.
+        """
+        episode_history: List[EpisodeResult] = []
+
         for ep in tqdm(range(episodes), disable=(not debug)):
             obs = env.reset().to_array()
             done = False
-            total_reward = 0
-            ep_duration = 0
-            
+            total_reward = 0.0
+
             while not done:
                 action = self.act(obs, eval=True)  # Greedy action selection
-                next_obs, reward, done, result, _ = env.step(action)
+                next_obs, reward, done, result = env.step(action)
                 obs = next_obs.to_array()
                 total_reward += reward
-                ep_duration += 1
-                
-            ep_durations.append(ep_duration)
-            results['crashed'] += int(result[0])
-            results['landed'] += int(result[1])
-            results['exceeded_max_steps'] += int(result[2])
-            total_rewards.append(total_reward)
-        
-        avg_reward = np.mean(total_rewards)
-        avg_duration = np.mean(ep_durations)
-        if debug:
-            print(f"Average Reward over {episodes} episodes: {avg_reward:.1f}")
-            print(f"Average Episode Duration: {avg_duration:.1f} steps")
-            print(f"Results:\n Max Steps Exceeded={results['exceeded_max_steps']}, Crashed={results['crashed']}, Landed={results['landed']}")      
 
-        return total_rewards, avg_duration, results
-    
-    def show_progress(self, env, episodes=5, save_gif=False, gif_path="dqn_agent_progress.gif"):
+            # noinspection PyUnboundLocalVariable
+            result['reward'] = total_reward
+            episode_history.append(result)
+
+        if debug:
+            print("Evaluation complete.")
+            print(" | ".join(self._calculate_stats(episode_history)))
+
+        return episode_history
+
+    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="dqn_agent_progress.gif"):
         """
         Runs the trained agent and renders the environment.
         """
@@ -460,7 +419,7 @@ class DQNAgent:
             obs = env.reset().to_array()
             done = False
             total_reward = 0
-            
+
             while not done:
                 renderer.clock.tick(60) # Lock to 60 FPS for viewing
                 
@@ -473,136 +432,34 @@ class DQNAgent:
                 # Greedy action selection (epsilon=0)
                 action = self.act(obs, eval=True)
                 
-                next_obs, reward, done, _, _ = env.step(action)
+                next_obs, reward, done, _ = env.step(action)
                 obs = next_obs.to_array()
                 total_reward += reward
 
                 # Capture frame for GIF if enabled
-                if save_gif:
+                if save_gif and hasattr(renderer, 'capture_frame'):
                     renderer.capture_frame()
 
                 renderer.render(action)
                 
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
-            pygame.time.wait(1000) # Pause for a second before the next episode```
+            pygame.time.wait(1000) # Pause for a second before the next episode
 
-class VectorizedEnv:
-    """
-    Runs multiple environments in parallel.
-    """
-    def __init__(self, env_fn, num_envs=8, debug=False):
-        self.num_envs = num_envs
-        self.envs = [env_fn(debug=debug) for _ in range(num_envs)]
-    
-    def reset(self):
-        return np.array([env.reset().to_array() for env in self.envs])
-    
-    def reset_env(self, env_index):
-        return self.envs[env_index].reset().to_array()
-    
-    def step(self, actions):
-        results = [env.step(action) for env, action in zip(self.envs, actions)]
-        obs = np.array([r[0].to_array() for r in results])
-        rewards = np.array([r[1] for r in results])
-        dones = np.array([r[2] for r in results])
-        infos = np.array([r[3] for r in results])
-        shaping_rewards = np.array([r[4] for r in results])
-        
-        # Auto-reset done environments
-        for i, done in enumerate(dones):
-            if done:
-                obs[i] = self.envs[i].reset().to_array()
-        
-        return obs, rewards, dones, infos, shaping_rewards
-    
-class AsyncCheckpointWriter:
-    """
-    A simple asynchronous checkpoint writer that uses a background thread and a queue to save model weights without 
-    blocking the main training loop.
-    """
-    def __init__(self, max_queue_size=4, flush_interval=0.1):
-        self.q = queue.Queue(maxsize=max_queue_size)
-        self.flush_interval = flush_interval
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._worker, daemon=True)
-        self._thread.start()
-
-    def _worker(self):
-        while not self._stop_event.is_set():
-            try:
-                item = self.q.get(timeout=self.flush_interval)
-            except queue.Empty:
-                continue
-            if item is None:
-                # Poison pill to stop
-                break
-            path, state_dict = item
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            try:
-                torch.save(state_dict, path)
-            except Exception as e:
-                print(f"[AsyncCheckpointWriter] Failed to save {path}: {e}")
-            finally:
-                self.q.task_done()
-
-    def enqueue(self, path, state_dict):
-        try:
-            self.q.put_nowait((path, state_dict))
-        except queue.Full:
-            # If queue is full, you can drop the oldest by getting one item
-            try:
-                _ = self.q.get_nowait()
-                self.q.task_done()
-                self.q.put_nowait((path, state_dict))
-            except Exception:
-                # As a fallback, save synchronously
-                torch.save(state_dict, path)
-
-    def stop(self, wait=True):
-        self._stop_event.set()
-        try:
-            self.q.put_nowait(None)
-        except queue.Full:
-            pass
-        if wait:
-            self._thread.join()
+# Checkpoints are saved synchronously with torch.save to keep the implementation simple.
 
 if __name__ == "__main__":
     # Environment
-    num_actions = 4
-    # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
-    # lunar_env = LLE_XOffset(debug=True)
-    # lunar_env = LLE_InitialVelocity(debug=True)
-    lunar_env = LunarLanderEnv(debug=True)
+    lunar_env = LunarLanderEnv(debug=False)
 
-    # agent
+    # Agent
     agent = DQNAgent()
 
-    # Vectorized training with multiple environments in parallel
-    chkpt_path="DQN_Agent_checkpoints/agent1"
-    # rewards, losses, logging_intervals = agent.train(SimpleLunarLanderEnv, episodes=3000, debug=True)
-    # rewards, losses, logging_intervals = agent.train(LLE_XOffset, episodes=3000, debug=True)
-    # rewards, losses, logging_intervals = agent.train(LLE_InitialVelocity, episodes=3000, debug=True)
-    rewards = agent.train(LunarLanderEnv,
-                          episodes=5000,
-                          chkpt_path=chkpt_path,
-                          debug=True,
-                          time_based_logging=True,
-                        )
+    # Train the agent
+    history = agent.train(LunarLanderEnv, episodes=1000, debug=True, logging_rate=100)
+    plot_learning_curve([h['reward'] for h in history], agent_type="DQN")
 
-    # Training curves
-    num_parallel_envs = 8
-    step_factor = 100
-    xticks = np.arange(0, num_parallel_envs * len(rewards), step=(num_parallel_envs * step_factor))
-    plot_learning_curve(rewards, agent_type='DQN', xticks=xticks)
-
-    logging_intervals = np.load(os.path.join(chkpt_path, 'training_episodes_per_interval.npy'))
-    losses = np.load(os.path.join(chkpt_path, 'training_Q_network_losses.npy'))
-    plot_learning_curve(losses, agent_type='DQN', xticks=xticks, ylabel='Avg Q Network Loss')
-
-    # Evaluate the trained agent
-    rewards, avg_duration, results = agent.evaluate(lunar_env, episodes=100)
+    # Evaluate and render the trained agent
+    agent.evaluate(lunar_env, episodes=100)
 
     # Show a few episodes of the trained agent
     agent.show_progress(lunar_env, episodes=5)

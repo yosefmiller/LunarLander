@@ -49,11 +49,11 @@ def train_and_collect_metrics(env,
     for i in range(num_agents):
         print(f'\nagent {i}:')
         agent = agent_constructor()
-        G_tr = agent.train(env=env,
+        history_tr = agent.train(env=env,
                            episodes=num_tr_episodes,
                            chkpt_path=os.path.join(training_results_path, f"agent{i}"))
         # all_returns[i] = G_tr
-        all_returns.append(G_tr)
+        all_returns.append([ep["reward"] for ep in history_tr])
 
     # DQN trains via steps, so # of episodes can vary across training instances
     if agent_type == "DQN":

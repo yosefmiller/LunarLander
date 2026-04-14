@@ -1,3 +1,5 @@
+from collections import Counter
+from typing import Dict, Iterable
 
 import sarsa_agent
 import qlearning_agent
@@ -96,7 +98,7 @@ def training_metrics(agent_types=AGENT_TYPES, training_results_path='training_re
                             save_path=plot_name,
                             save_only=True)
 
-def evaluate_agents(agent_types=AGENT_TYPES, training_results_path="training_results", episodes=1000, outdir="test_results"):
+def evaluate_agents(agent_types: Iterable[str]=AGENT_TYPES, training_results_path="training_results", episodes=1000, outdir="test_results") -> Dict:
     """
     Evaluate the trained agents on Lunar Lander and save the test results (returns, episode durations, landing results) for each agent type.
 
@@ -108,7 +110,7 @@ def evaluate_agents(agent_types=AGENT_TYPES, training_results_path="training_res
     Returns:
         None
     """
-    all_returns = {a: None for a in agent_types}
+    all_history = {a: None for a in agent_types}
 
     for agent_type in AGENT_TYPES:
         results_path = os.path.join(outdir, agent_type)
@@ -129,41 +131,40 @@ def evaluate_agents(agent_types=AGENT_TYPES, training_results_path="training_res
         # Evaluate all trained agents of this type
         agent = agent_constructor()
         env = LunarLanderEnv()
-        returns = np.zeros((number_of_agents, episodes))
-        avg_eps_durations = np.zeros(number_of_agents)
-        landing_results = []
+        episode_histories = []
         ckpt_filename = EVAL_CONFIGS[agent_type]['ckpt_name']
 
         print(f"\nEvaluating {number_of_agents} {agent_type} agents, each over {episodes} episodes...")
 
         for i in tqdm(range(number_of_agents)):
             agent.load(f"{ckpt_dirs[i]}/{ckpt_filename}")
-            total_rewards, avg_duration, results = agent.evaluate(env=env, episodes=episodes)
-            returns[i] = np.array(total_rewards)
-            avg_eps_durations[i] = avg_duration
-            landing_results.append(results)
+            episode_histories.append(agent.evaluate(env=env, episodes=episodes))
+
+        rewards = [h['reward'] for episode_history in episode_histories for h in episode_history]
+        durations = [h['steps'] for episode_history in episode_histories for h in episode_history]
+
+        crashes = [h['crashed'] for episode_history in episode_histories for h in episode_history]
+        lands = [h['landed'] for episode_history in episode_histories for h in episode_history]
+        timeout = [h['timeout'] for episode_history in episode_histories for h in episode_history]
+        crash_counts = Counter(tuple(sorted(h['crash_reason'], key=lambda r: r.value))
+                               for episode_history in episode_histories
+                               for h in episode_history if not h.get('landed'))  # shape: (num_agents, episodes)
 
         # Compute average stats across each agent instance
-        avg_G_i_ts = np.mean(returns, axis=0)
-        print(f"Avg return: {np.mean(avg_G_i_ts)}, standard deviation: {np.std(avg_G_i_ts)}")
-        print(f"Avg episode duration: {np.mean(avg_eps_durations)}, standard deviation: {np.std(avg_eps_durations)}")
-        num_max_steps_exceeded = np.array([i['exceeded_max_steps'] for i in landing_results])
-        crashes = np.array([i['crashed'] for i in landing_results])
-        lands = np.array([i['landed'] for i in landing_results])
-        percent_max_steps_exceeded = 100 * np.mean(num_max_steps_exceeded) / episodes
-        percent_crashed = 100 * np.mean(crashes) / episodes
-        percent_landed = 100 * np.mean(lands) / episodes
-        print(f'Avg landing results: max_steps_exceeded={percent_max_steps_exceeded:.2f}%, crashed={percent_crashed:.2f}%, landed={percent_landed:.2f}%')
+        print(f"Avg return: {np.mean(rewards)}, standard deviation: {np.std(rewards)}")
+        print(f"Avg episode duration: {np.mean(durations)}, standard deviation: {np.std(durations)}")
+        percent_timeout = 100 * np.mean(timeout)
+        percent_crashed = 100 * np.mean(crashes)
+        percent_landed = 100 * np.mean(lands)
+        print(f'Avg landing results: timeout={percent_timeout:.2f}%, crashed={percent_crashed:.2f}%, landed={percent_landed:.2f}%')
 
-        # save test results
+        # Save test results
         print(f"Saving test results to '{results_path}'")
-        np.save(os.path.join(results_path, 'returns.npy'), returns)
-        np.save(os.path.join(results_path, 'avg_eps_durations.npy'), avg_eps_durations)
-        np.save(os.path.join(results_path, 'landing_results.npy'), landing_results)
+        np.save(os.path.join(results_path, 'evaluation_history.npy'), episode_histories)
 
-        all_returns[agent_type] = returns
+        all_history[agent_type] = episode_histories
     
-    return all_returns
+    return all_history
 
 def statistical_significance(test_results_path='test_results', agent_types=AGENT_TYPES, alpha=0.05):
     """

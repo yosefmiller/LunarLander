@@ -35,9 +35,13 @@ def plot_learning_curve(rewards_history, **config):
 
     # Save the plot for later analysis
     plt.savefig(save_path)
-    
+
     if save_only:
         plt.close()
         return
-    
+
     plt.show()
+
+def rand_argmax(b, **kw):
+    """A random tie-breaking argmax"""
+    return np.argmax(np.random.random(b.shape) * (b == np.amax(b,**kw, keepdims=True)), **kw)

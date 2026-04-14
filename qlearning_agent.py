@@ -1,13 +1,20 @@
+from typing import List
+
 import numpy as np
 from sarsa_agent import SARSAAgent
 from utils import plot_learning_curve
-from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
+from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer, EpisodeResult
 
 class QLearningAgent(SARSAAgent):
     """
     Q-Learning agent for the Lunar Lander environment. 
     Inherets from SARSAAgent but implements the Q-Learning update rule instead of SARSA.
     """
+
+    @property
+    def name(self) -> str:
+        return "QLEARNING"
+
     def update(self, state_tuple, action, reward, next_state_tuple, next_action, done):
         """
         Update the Q-table based on the observed transition (state, action, reward, next state).
@@ -29,14 +36,17 @@ class QLearningAgent(SARSAAgent):
         new_q = current_q + self.alpha * (reward + self.gamma * next_q - current_q)
         self.q_table[state_tuple][action] = new_q
 
+    def load(self, path="QLearning_Agent_checkpoints/agent1/best_qtable_values.npy") -> SARSAAgent:
+        return super().load(path)
+
     def train(self,
-              env,
+              env: LunarLanderEnv,
               episodes=1000,
               agent_type='QLearning',
               chkpt_path="QLearning_Agent_checkpoints/agent1",
               debug=False,
-              logging_rate=500) -> list:
-        
+              logging_rate=500) -> List[EpisodeResult]:
+
         """ Call SARSA train method but with Q-Learning specific parameters. """
         return super().train(env=env,
                              episodes=episodes,
@@ -54,13 +64,11 @@ if __name__ == "__main__":
     lunar_env = LunarLanderEnv(debug=True)
 
     # Agent
-    qlearning_agent = QLearningAgent(n_actions=num_actions)
+    qlearning_agent = QLearningAgent(n_actions=num_actions)  #.load()
 
     # Train the agent and save the Q-table
-    rewards = qlearning_agent.train(lunar_env, 
-                                    episodes=50000, 
-                                    debug=True)
-    plot_learning_curve(rewards, agent_type='Q-Learning', ylim=(-150, 200))
+    history = qlearning_agent.train(lunar_env, episodes=50000, debug=True)
+    plot_learning_curve([h['reward'] for h in history], agent_type='Q-Learning', ylim=(-150, 200))
 
     # Evaluate and render the trained agent
     qlearning_agent.evaluate(lunar_env, episodes=1000)
