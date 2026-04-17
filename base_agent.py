@@ -9,7 +9,7 @@ All agents must implement the abstract methods defined here.
 
 from abc import ABC, abstractmethod
 from collections import Counter
-from typing import Any, Tuple, List, TypedDict
+from typing import Tuple, List
 
 import numpy as np
 
@@ -23,6 +23,17 @@ class BaseAgent(ABC):
     Defines the common interface that all agents must implement to ensure
     consistency across the training platform.
     """
+
+    @abstractmethod
+    def act(self, state: Tuple|np.ndarray, evaluate: bool = False) -> int:
+        """
+        Select an action to take given the current state of the environment.
+
+        :param state: Current state of the environment
+        :param evaluate: Whether to evaluate the agent and choose exploitation
+        :return: action to take
+        """
+        pass
 
     @abstractmethod
     def train(self, env: LunarLanderEnv, episodes: int, chkpt_path: str, **kwargs) -> List[EpisodeResult]:

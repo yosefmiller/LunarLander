@@ -1,5 +1,5 @@
 from collections.abc import Collection
-from typing import Tuple, List, Type
+from typing import List, Type
 
 import torch
 import torch.nn as nn
@@ -9,7 +9,7 @@ import os
 import time
 from tqdm import tqdm
 from utils import plot_learning_curve
-from lunar_lander_env import LunarLanderEnv, VectorizedEnv, Renderer, EpisodeResult
+from lunar_lander_env import LunarLanderEnv, VectorizedEnv, Renderer, EpisodeResult, SimpleLunarLanderEnv
 from base_agent import BaseAgent
 
 class QNetwork(nn.Module):
@@ -42,7 +42,7 @@ class QNetwork(nn.Module):
         torch.save(self.state_dict(), path)
 
     def load(self, path):
-        self.load_state_dict(torch.load(path))
+        self.load_state_dict(torch.load(path, map_location=self.device))
 
     def reset(self):
         for layer in self.children():
@@ -121,6 +121,7 @@ class DQNAgent(BaseAgent):
                 num_actions=4,
                 alpha=1e-4,
                 gamma=0.99,
+                use_double_dqn=False,
                 epsilon_config=None,
                 update_freq=4,
                 replay_buffer_config=None,
@@ -135,6 +136,7 @@ class DQNAgent(BaseAgent):
         self.num_actions = num_actions
         self.alpha = alpha
         self.gamma = gamma
+        self.use_double_dqn = bool(use_double_dqn)
 
         # Initialize Q-Network and Target Network
         self.q_network = QNetwork(num_state_features, num_actions)
@@ -165,9 +167,9 @@ class DQNAgent(BaseAgent):
 
     @property
     def name(self) -> str:
-        return "DQN"
+        return "DoubleDQN" if self.use_double_dqn else "DQN"
 
-    def act(self, state, eval=False) -> int:
+    def act(self, state, evaluate=False) -> int:
         if not eval and np.random.rand() < self.epsilon:
             return int(np.random.randint(0, self.num_actions))
         else:
@@ -176,11 +178,11 @@ class DQNAgent(BaseAgent):
                 q_values = self.q_network(state_tensor)
                 return int(torch.argmax(q_values).item())
 
-    def act_batch(self, states, eval=False) -> Collection[int]:
+    def act_batch(self, states, evaluate=False) -> Collection[int]:
         """Select actions for a batch of states with per-environment epsilon-greedy."""
         batch_size = len(states)
         
-        if eval:
+        if evaluate:
             # Pure exploitation during evaluation
             with torch.no_grad():
                 states_tensor = torch.FloatTensor(states).to(self.q_network.device)
@@ -204,7 +206,7 @@ class DQNAgent(BaseAgent):
         return actions
 
     def optimize_q_network(self):
-        if len(self.replay_buffer) < self.replay_buffer.min_size:
+        if len(self.replay_buffer) < max(self.replay_buffer.min_size, self.batch_size):
             return
         
         # Sample a batch of experiences from the replay buffer
@@ -220,8 +222,14 @@ class DQNAgent(BaseAgent):
 
         # Compute target Q-values using the target network
         with torch.no_grad():
-            target_q_values = rewards + (1 - dones) * self.gamma * self.target_network(next_states).max(1)[0]
-        
+            if self.use_double_dqn:
+                next_actions = self.q_network(next_states).argmax(dim=1, keepdim=True)
+                next_q_values = self.target_network(next_states).gather(1, next_actions).squeeze(1)
+            else:
+                next_q_values = self.target_network(next_states).max(1)[0]
+
+            target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
+
         # Compute loss and optimize the Q-network
         loss = nn.MSELoss()(q_values, target_q_values)
         self.optimizer.zero_grad()
@@ -250,7 +258,7 @@ class DQNAgent(BaseAgent):
         return self
 
     def train(self,
-              env: Type[LunarLanderEnv],
+              env: Type[LunarLanderEnv] | LunarLanderEnv,
               episodes=3000,
               max_steps=1000,
               num_parallel_envs=8,
@@ -258,22 +266,26 @@ class DQNAgent(BaseAgent):
               debug=False,
               logging_rate=5000,
               time_based_logging=False,
-              log_every_seconds=15.0):
-        
+              log_every_seconds=15.0) -> List[EpisodeResult]:
+
         if debug:
             print(f"Using device: {self.q_network.device}")
 
         # Save episode history: one dict per completed episode
         episode_history: List[EpisodeResult] = []
 
-        # Precompute total training steps
-        num_training_steps = episodes * max_steps // num_parallel_envs
+        # Keep max_steps for API compatibility and rough progress/checkpoint planning.
+        estimated_training_steps = max(1, episodes * max_steps // max(1, num_parallel_envs))
 
         os.makedirs(chkpt_path, exist_ok=True)
-        ckpt_interval = max(1, num_training_steps // 3)
+        ckpt_episode_interval = max(1, episodes // 3)
+        next_ckpt_episode = ckpt_episode_interval
+
+        # Accept either an env class or an env instance.
+        env_factory = env if isinstance(env, type) else type(env)
 
         # Create vectorized environments
-        vec_env = VectorizedEnv(env, num_envs=num_parallel_envs, debug=debug)
+        vec_env = VectorizedEnv(env_factory, num_envs=num_parallel_envs, debug=False)
         obs = vec_env.reset()  # shape (N, state_dim)
 
         # Per-env accumulators (vectorized)
@@ -284,14 +296,16 @@ class DQNAgent(BaseAgent):
         completed_episodes = 0
         next_log_episode = max(1, logging_rate)
         next_log_time = time.monotonic() + log_every_seconds
+        min_replay_size = max(self.replay_buffer.min_size, self.batch_size)
 
         if debug:
-            print(f"Training for {episodes} episodes...")
+            print(f"Training for {episodes} episodes (estimated {estimated_training_steps} vectorized steps)...")
 
         # Training duration
-        start = time.time()      
+        start = time.time()
+        progress_bar = tqdm(total=episodes, disable=debug, desc="Episodes", unit="ep")
 
-        for step in tqdm(range(num_training_steps), disable=debug):
+        while completed_episodes < episodes:
             # Act for all envs
             actions = self.act_batch(obs)
 
@@ -308,13 +322,19 @@ class DQNAgent(BaseAgent):
             if np.any(dones):
                 done_mask = dones.astype(bool)
                 idx = np.where(done_mask)[0]
-                for i, val in zip(idx, total_rewards[done_mask]):
+                episodes_added = 0
+                for i, val in zip(idx, total_rewards[done_mask].copy()):
+                    if completed_episodes >= episodes:
+                        break
                     # noinspection PyTypeChecker
                     episode_result: EpisodeResult = infos[i]
                     episode_result['reward'] = float(val)
                     episode_history.append(episode_result)
                     interval_history.append(episode_result)
                     completed_episodes += 1
+                    episodes_added += 1
+
+                progress_bar.update(episodes_added)
 
                 # Reset only done env accumulators
                 total_rewards[done_mask] = 0.0
@@ -342,8 +362,8 @@ class DQNAgent(BaseAgent):
             if should_log:
                 avg_loss = interval_loss_sum / max(1, interval_loss_count)
                 stats = [
-                    f"Step {step + 1}/{num_training_steps}",
-                    f"Episodes: {completed_episodes}",
+                    f"Step: {self.steps_done + 1}",
+                    f"Episodes: {completed_episodes}/{episodes}",
                     f"Buffer: {len(self.replay_buffer)}",
                     f"Epsilon: {self.epsilon:.3f}",
                     f"Avg Q Loss: {avg_loss:.3f}",
@@ -361,15 +381,18 @@ class DQNAgent(BaseAgent):
                     next_log_episode += max(1, logging_rate)
 
             # Also save periodic checkpoints for learning analysis
-            if (step + 1) % ckpt_interval == 0:
-                checkpoint_path = f"{chkpt_path}/ckpt_step_{step+1:07d}.pth"
+            if completed_episodes >= next_ckpt_episode:
+                checkpoint_path = f"{chkpt_path}/ckpt_step_{self.steps_done + 1:07d}.pth"
                 torch.save(self.q_network.state_dict(), checkpoint_path)
+                next_ckpt_episode += ckpt_episode_interval
 
             # Epsilon decay once per vectorized step
-            if len(self.replay_buffer) > self.replay_buffer.min_size:
+            if len(self.replay_buffer) >= min_replay_size:
                 self.decay_epsilon()
 
             self.steps_done += 1
+
+        progress_bar.close()
 
         time_elapsed = time.time() - start
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
@@ -394,7 +417,7 @@ class DQNAgent(BaseAgent):
             total_reward = 0.0
 
             while not done:
-                action = self.act(obs, eval=True)  # Greedy action selection
+                action = self.act(obs, evaluate=True)  # Greedy action selection
                 next_obs, reward, done, result = env.step(action)
                 obs = next_obs.to_array()
                 total_reward += reward
@@ -418,7 +441,7 @@ class DQNAgent(BaseAgent):
         for ep in range(episodes):
             obs = env.reset().to_array()
             done = False
-            total_reward = 0
+            total_reward = 0.0
 
             while not done:
                 renderer.clock.tick(60) # Lock to 60 FPS for viewing
@@ -430,7 +453,7 @@ class DQNAgent(BaseAgent):
                         return
 
                 # Greedy action selection (epsilon=0)
-                action = self.act(obs, eval=True)
+                action = self.act(obs, evaluate=True)
                 
                 next_obs, reward, done, _ = env.step(action)
                 obs = next_obs.to_array()
@@ -443,18 +466,22 @@ class DQNAgent(BaseAgent):
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
 
+        pygame.quit()
+
 # Checkpoints are saved synchronously with torch.save to keep the implementation simple.
 
 if __name__ == "__main__":
     # Environment
+    # lunar_env = SimpleLunarLanderEnv(debug=False)
     lunar_env = LunarLanderEnv(debug=False)
 
     # Agent
-    agent = DQNAgent()
+    agent = DQNAgent(use_double_dqn=True)
 
     # Train the agent
-    history = agent.train(LunarLanderEnv, episodes=1000, debug=True, logging_rate=100)
-    plot_learning_curve([h['reward'] for h in history], agent_type="DQN")
+    history = agent.train(LunarLanderEnv, episodes=5000, debug=True, logging_rate=100)
+    # noinspection PyTypeChecker
+    plot_learning_curve([h['reward'] for h in history], agent_type=agent.name)
 
     # Evaluate and render the trained agent
     agent.evaluate(lunar_env, episodes=100)
