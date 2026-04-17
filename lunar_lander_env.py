@@ -6,6 +6,8 @@ import numpy as np
 import pygame
 import math
 
+from PIL import Image
+
 # --- Constants ---
 FPS = 60
 DT = 1.0 / FPS  # Seconds
@@ -248,7 +250,7 @@ class LunarLanderEnv:
         result: dict (crash status, landing status, max step exceeded, crash reason)
         """
         if self.landed or self.crashed or self.timeout:
-            return self._get_state(), 0, True, {}
+            return self._get_state(), 0, True, EpisodeResult(steps=self.number_of_steps, reward=0, landed=self.landed, crashed=self.crashed, timeout=self.timeout, crash_reason=self.crash_reason)
 
         #########################
         ##### APPLY THRUST ######
@@ -331,7 +333,7 @@ class LunarLanderEnv:
             # Must be within PAD radius
 
             vel_safe = abs(self.vy) < 2.5 and abs(self.vx) < 2.0
-            angle_safe = abs(self.theta) < 0.3
+            angle_safe = abs(self.theta) < 0.5
             on_pad = abs(self.x) < (PAD_WIDTH / 2.0)
 
             # Physics adjustment to sit on ground
@@ -490,6 +492,20 @@ class LLE_InitialVelocity(LunarLanderEnv):
         self.theta = 0.0
         self.omega = 0.0
 
+class RandomLunarLander(LunarLanderEnv):
+    """
+    Fully randomized lunar lander environment: some offset x, y, tilt, dx, dy
+    """
+
+    def _init_state(self):
+        """Override _init_sate() to provide simpler initial conditions."""
+        self.x = np.random.uniform(-50, 50)
+        self.y = np.random.uniform(20, 50)
+        self.vx = np.random.uniform(-5.0, -1.0) * self.x / abs(self.x)  # Velocity points towards center
+        self.vy = np.random.uniform(-2.5, -0.5)
+        self.theta = np.random.uniform(-0.2, 0.2)
+        self.omega = 0.0
+
 class VectorizedEnv:
     """
     Runs multiple environments in parallel.
@@ -521,13 +537,15 @@ class VectorizedEnv:
         return obs, rewards, dones, infos
 
 class Renderer:
-    def __init__(self, env):
+    def __init__(self, env, save_gif=False):
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Apollo Lunar Descent Simulation")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("monospace", 16)
         self.env = env
+        self.should_save_gif = save_gif
+        self.frames = []
 
     @staticmethod
     def world_to_screen(x, y):
@@ -611,7 +629,8 @@ class Renderer:
             f"ANGLE:    {math.degrees(self.env.theta):.1f} deg",
             f"ANG.VEL:  {math.degrees(self.env.omega):.1f} deg/s",
             f"FUEL:     {self.env.fuel:.1f} kg",
-            f"MASS:     {self.env.mass:.0f} kg"
+            f"MASS:     {self.env.mass:.0f} kg",
+            f"SHAPING:  {self.env._calculate_shaping():.2f}",
         ]
 
         for i, line in enumerate(telemetry):
@@ -637,9 +656,60 @@ class Renderer:
 
         pygame.display.flip()
 
+        # Capture frame for GIF if enabled
+        if self.should_save_gif:
+            # Convert pygame surface to PIL Image in a robust way.
+            # pygame.image.tostring is the commonly used API to get a bytes object
+            # in a known pixel ordering; Image.frombuffer avoids an extra copy.
+            # Use the newer API name `tobytes` (preferred in recent pygame versions)
+            string_image = pygame.image.tobytes(self.screen, 'RGB')
+            pil_image = Image.frombuffer('RGB', (SCREEN_WIDTH, SCREEN_HEIGHT), string_image, 'raw', 'RGB', 0, 1)
+            # Use a copy to decouple from the underlying buffer and keep an RGBA image
+            self.frames.append(pil_image.convert('RGBA').copy())
+
+    def save_gif(self, gif_path: str):
+        """Save captured frames to a GIF.
+
+        Notes:
+        - Many GIF viewers impose a minimum frame delay (commonly ~20 ms). Very small
+          durations (e.g. 16 ms for 60 FPS) can be rounded or clamped which makes the
+          animation appear slower than expected. To improve compatibility we enforce
+          a small minimum delay (20 ms) and convert frames to an adaptive palette.
+        - Converting frames to 'P' (paletted) with an adaptive palette reduces color
+          artifacts and keeps file size reasonable.
+        """
+        if self.should_save_gif and self.frames:
+            print(f"Saving GIF with {len(self.frames)} frames to {gif_path}...")
+
+            # Convert to paletted images using an adaptive palette (better compatibility)
+            paletted = [f.convert('P', palette=Image.Palette.ADAPTIVE, colors=256) for f in self.frames]
+
+            # Compute duration in milliseconds. Use a small minimum (20ms) because
+            # many viewers clamp very short delays, which can make the GIF look slow.
+            duration_ms = max(20, int(round(1000.0 / FPS)))
+
+            # Save with disposal=2 (restore to background) to avoid frame accumulation
+            # and optimize palette. Provide a consistent per-frame duration.
+            try:
+                paletted[0].save(
+                    gif_path,
+                    save_all=True,
+                    append_images=paletted[1:],
+                    duration=duration_ms,
+                    loop=0,
+                    disposal=2,
+                    optimize=True,
+                )
+            except TypeError:
+                # Older Pillow versions may not accept disposal/optimize kwargs; fall back
+                paletted[0].save(gif_path, save_all=True, append_images=paletted[1:], duration=duration_ms, loop=0)
+
+            # Clear frames after saving
+            self.frames = []
+
 def main():
-    # env = LunarLanderEnv()
-    env = SimpleLunarLanderEnv()
+    env = LunarLanderEnv()
+    # env = SimpleLunarLanderEnv()
     renderer = Renderer(env)
     running = True
 
@@ -672,6 +742,10 @@ def main():
             continue
         elif keys[pygame.K_4]:
             env = LunarLanderEnv()
+            renderer = Renderer(env)
+            continue
+        elif keys[pygame.K_5]:
+            env = RandomLunarLander()
             renderer = Renderer(env)
             continue
 

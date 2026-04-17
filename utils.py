@@ -1,7 +1,10 @@
+from typing import List
+
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_learning_curve(rewards_history, **config):
+
+def plot_learning_curve(rewards_history: List[float], **config):
     # Parse plotting configuration
     agent_type = config.get('agent_type', "Awesome_RL_agent")
     environment = config.get('environment', "Lunar Lander")
@@ -12,16 +15,21 @@ def plot_learning_curve(rewards_history, **config):
     ylim = config.get('ylim', -50.0)
     save_path = config.get('save_path', f"{agent_type}_lc_plot.jpg")
     save_only = config.get('save_only', False)
+    windows = config.get('windows', [
+        (len(rewards_history)//1000, 'gray'),
+        (len(rewards_history)//250, 'blue'),
+        # (len(rewards_history)//100, 'green')
+    ])
 
     # Plot the learning curve
     plt.figure(figsize=(14, 5))
-    plt.plot(rewards_history, alpha=0.5, color='gray', label=ylabel)
+    # plt.plot(rewards_history, alpha=0.5, color='gray', label=ylabel)
 
     # Calculate a moving average
-    window = 20
-    if len(rewards_history) >= window:
-        moving_avg = np.convolve(rewards_history, np.ones(window)/window, mode='valid')
-        plt.plot(np.arange(window-1, len(rewards_history)), moving_avg, color='blue', label='Moving Average (20 ep)')
+    for window, color in windows:
+        if len(rewards_history) >= window:
+            moving_avg = np.convolve(rewards_history, np.full(window, 1/window), mode='valid')
+            plt.plot(np.arange(window-1, len(rewards_history)), moving_avg, color=color, linewidth=1.0, label=f'Moving Average ({window} ep)')
 
     plt.title(f"{agent_type} Agent Learning Curve - {environment}", fontsize=18)
     plt.xlabel(xlabel, fontsize=16)

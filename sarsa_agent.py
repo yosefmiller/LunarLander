@@ -225,9 +225,9 @@ class SARSAAgent(BaseAgent):
 
         return episode_history
 
-    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="sarsa_agent_progress.gif"):
+    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="SARSA_Agent_checkpoints/agent1"):
         """Runs the trained agent and renders the environment."""
-        renderer = Renderer(env)
+        renderer = Renderer(env, save_gif)
         
         for ep in range(episodes):
             state = env.reset()
@@ -254,7 +254,8 @@ class SARSAAgent(BaseAgent):
                 total_reward += reward
                 
                 renderer.render(action)
-                
+
+            renderer.save_gif(f"{gif_path}/{self.name}_episode_{ep + 1:02d}.gif")
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
             

@@ -413,8 +413,8 @@ class DQNAgent(BaseAgent):
         """
         Runs the trained agent and renders the environment.
         """
-        renderer = Renderer(env)
-        
+        renderer = Renderer(env, save_gif)
+
         for ep in range(episodes):
             obs = env.reset().to_array()
             done = False
@@ -436,12 +436,10 @@ class DQNAgent(BaseAgent):
                 obs = next_obs.to_array()
                 total_reward += reward
 
-                # Capture frame for GIF if enabled
-                if save_gif and hasattr(renderer, 'capture_frame'):
-                    renderer.capture_frame()
-
                 renderer.render(action)
                 
+            if save_gif:
+                renderer.save_gif(gif_path)
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
 

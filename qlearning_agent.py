@@ -74,4 +74,4 @@ if __name__ == "__main__":
     qlearning_agent.evaluate(lunar_env, episodes=1000)
 
     # Show a few episodes of the trained agent
-    qlearning_agent.show_progress(lunar_env, episodes=5)
+    qlearning_agent.show_progress(lunar_env, episodes=5, save_gif=False, gif_path="QLearning_Agent_checkpoints/agent1")
