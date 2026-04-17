@@ -61,6 +61,10 @@ class SARSALambdaAgent(BaseAgent):
     SARSA(λ) agent with tile coding for function approximation to solve the Lunar Lander problem.
     This agent uses eligibility traces to allow for more efficient learning from sequences of actions and rewards.
     """
+
+    def act(self, state: Tuple | np.ndarray, evaluate: bool = False) -> int:
+        pass
+
     def __init__(self,
                  actions=4,
                  alpha=0.1,

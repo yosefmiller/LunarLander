@@ -225,7 +225,7 @@ class SARSAAgent(BaseAgent):
 
         return episode_history
 
-    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="SARSA_Agent_checkpoints/agent1"):
+    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="SARSA_Agent_checkpoints/agent1", show_bins=False):
         """Runs the trained agent and renders the environment."""
         renderer = Renderer(env, save_gif)
         
@@ -235,7 +235,7 @@ class SARSAAgent(BaseAgent):
             done = False
             total_reward = 0.0
             
-            print(f"\nEvaluating Episode {ep + 1}...")
+            print(f"\nRendering Episode {ep + 1}...")
             
             while not done:
                 renderer.clock.tick(60) # Lock to 60 FPS for viewing
@@ -253,7 +253,7 @@ class SARSAAgent(BaseAgent):
                 state_tuple = self.discretize(next_state)
                 total_reward += reward
                 
-                renderer.render(action)
+                renderer.render(action, bins=self.bins if show_bins else None)
 
             renderer.save_gif(f"{gif_path}/{self.name}_episode_{ep + 1:02d}.gif")
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")

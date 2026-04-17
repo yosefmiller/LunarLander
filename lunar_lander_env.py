@@ -559,7 +559,7 @@ class Renderer:
         screen_y = int(SCREEN_HEIGHT - (GROUND_Y + y * SCALE))
         return screen_x, screen_y
 
-    def render(self, action=0):
+    def render(self, action=0, bins=None):
         self.screen.fill(BLACK)
 
         # 1. Stars (Static background decoration)
@@ -578,6 +578,32 @@ class Renderer:
         pygame.draw.rect(self.screen, DARK_GREY, (pad_left, ground_px, pad_w_px, 10))
         # Landing marker
         pygame.draw.circle(self.screen, WHITE, (int(SCREEN_WIDTH / 2), ground_px + 5), 5)
+
+        # Draw grids if bins provided
+        if bins is not None:
+            # X grid lines
+            for bx in bins.get('x', []):
+                wx = bx * 50.0  # Convert normalized x back to world
+                sx1, sy1 = self.world_to_screen(wx, -100)  # Extend from y=-100 to y=100
+                sx2, sy2 = self.world_to_screen(wx, 100)
+                pygame.draw.line(self.screen, GREY, (sx1, sy1), (sx2, sy2), 1)
+
+            # Y grid lines
+            for by in bins.get('y', []):
+                wy = by * 50.0  # Convert normalized y back to world
+                sx1, sy1 = self.world_to_screen(-100, wy)  # Extend from x=-100 to x=100
+                sx2, sy2 = self.world_to_screen(100, wy)
+                pygame.draw.line(self.screen, GREY, (sx1, sy1), (sx2, sy2), 1)
+
+            # Theta radial grid centered on lander
+            lander_sx, lander_sy = self.world_to_screen(self.env.x, self.env.y)
+            for btheta in bins.get('theta', []):
+                # Draw radial lines at bin angles, length 100 pixels
+                dx = math.sin(btheta) * 100
+                dy = math.cos(btheta) * 100
+                end_sx = lander_sx + dx
+                end_sy = lander_sy - dy  # Screen y is flipped
+                pygame.draw.line(self.screen, GREY, (lander_sx, lander_sy), (end_sx, end_sy), 1)
 
         # 4. Trajectory Trace
         if len(self.env.trace) > 1:
