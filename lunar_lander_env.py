@@ -19,12 +19,11 @@ SCALE = 10.0  # Pixels per meter (Zoomed out to show approach)
 # WORLD
 SCREEN_WIDTH = 1000  # Pixels
 SCREEN_HEIGHT = 600  # Pixels
-GROUND_Y = 50.0  # Meters from bottom of screen (visual offset)
+GROUND_Y = 50.0  # Pixels from bottom of screen (visual offset)
 
 # LANDER PROPERTIES
 LANDER_DRY_MASS = 600.0  # kg (Structure + Descent Engine)
-FUEL_MASS_START = 400.0  # kg (Propellant)
-MAX_FUEL = 400.0
+FUEL_MASS_START = 100.0  # kg (Propellant)
 
 LANDER_WIDTH = 6.0  # Meters
 LANDER_HEIGHT = 4.0  # Meters
@@ -41,7 +40,7 @@ FUEL_CONSUMPTION_MAIN = 2.0  # kg per second
 FUEL_CONSUMPTION_SIDE = 0.5  # kg per second
 
 # LANDING ZONE
-PAD_WIDTH = 20.0  # Meters
+PAD_WIDTH = 30.0  # Meters
 PAD_X_TARGET = 0.0  # Center of the world (0,0)
 
 # COLORS
@@ -171,25 +170,24 @@ class LunarLanderEnv:
         """
         Calculates a potential-based shaping value.
         Higher (closer to 0) is better.
-        Max penalty (start of episode) is strictly bounded to around -130.
+        The shaping stays bounded and well below the landing bonus.
         """
         # Scale state to roughly 0.0 to 1.0 range
-        dist     = np.sqrt(self.x ** 2 + self.y ** 2)  # meters
-        velocity = np.sqrt(self.vx ** 2 + self.vy ** 2)  # m/s
-        tilt     = abs(self.theta)  # radians
-        omega    = abs(self.omega)  # radians/s
+        dist     = np.sqrt(self.x ** 2 + (self.y-3) ** 2) / 75.0  # 1 unit = 75m
+        velocity = np.sqrt(self.vx ** 2 + self.vy ** 2) / 15.0    # 1 unit = 15m/s
+        tilt     = abs(self.theta) * 2 / math.pi                  # 1 unit = 90degrees
+        omega    = abs(self.omega) * 2 / math.pi                  # 1 unit = 90degrees/s
 
-        y = np.clip(self.y / 50.0, 0.0, 1.0)  # Altitude factor (0 at ground, 1 at start)
-        proximity_factor = (1.0 - y) ** 2  # Ramps up as we get closer to the ground
+        # y = np.clip((self.y-3) / 50.0, 0.0, 1.0)  # Altitude factor (0 at ground, 1 at start)
+        # proximity_factor = (1.0 - y) ** 2  # Ramps up as we get closer to the ground
 
         # Calculate potential
-        # The sum of these weights (~130) is the maximum potential you can gain over an episode.
+        # The sum of these weights is the maximum potential you can gain over an episode.
         # This sum must be less than the landing bonus to ensure the agent will not intentionally crash for shaping rewards.
-        return (- 225.0 * dist / 75.0
-                - 45.0 * velocity / 15.0
-                # - 40.0 * velocity / 15.0 * proximity_factor
-                - 2.4 * tilt / (math.pi / 2.0)  # 90 degrees
-                - 1.5 * omega)
+        return (- 20.0 * dist
+                - 10.0 * velocity
+                - 5.0 * (tilt > 90) * (tilt - 90)
+        )
 
     def _calculate_reward(self, action: int) -> float:
         """
@@ -198,8 +196,8 @@ class LunarLanderEnv:
         (landed, crashed, timeout) are already updated.
         """
 
-        # 1. Time Penalty (farther from ground)
-        reward = -1.0/FPS * (1 + abs(self.y) / 50.0)
+        # 1. Time Penalty
+        reward = -0.0/FPS
 
         # 2. Potential-Based Shaping (Dense)
         shaping = self._calculate_shaping()
@@ -209,29 +207,35 @@ class LunarLanderEnv:
         self.prev_shaping = shaping
 
         # 3. Control/Fuel Penalties (Mild)
-        # Prevents infinite hovering without encouraging intentional crashing
-        if action == 1:
-            reward -= 0.05
-        elif action in [2, 3]:
-            reward -= 0.025
+        # if action == 1:
+        #     reward -= FUEL_CONSUMPTION_MAIN * DT * 0.5
+        # elif action in [2, 3]:
+        #     reward -= FUEL_CONSUMPTION_SIDE * DT * 0.5
 
         # 4. Terminal Conditions (Sparse)
         if self.landed:
-            reward += 100.0
+            reward += 500.0
 
             # Add bonus for landing squarely on both feet
             if abs(self.theta) < 0.1:
                 reward += 20.0
 
+            # Add fuel penalty
+            reward -= (FUEL_MASS_START - self.fuel)*2
+
         elif self.crashed:
-            # We use a flat crash penalty combined with the shaping penalties
-            # (which naturally punish high velocity and tilt) to avoid over-complicating.
-            reward -= 100.0
+            # reward -= 100.0
+            if CrashReason.TOO_FAST in self.crash_reason:
+                reward -= 20.0
+            if CrashReason.MISSED_LZ in self.crash_reason:
+                reward -= 20.0
+            if CrashReason.TILTED in self.crash_reason:
+                reward -= 10.0
+            if CrashReason.OUT_OF_RANGE in self.crash_reason:
+                reward -= 50.0
 
         elif self.timeout:
-            # Optional mild penalty for running out of time, though
-            # failing to get the +100 landing bonus is usually penalty enough.
-            reward -= 0.0
+            reward -= 5.0
 
         return reward
 
