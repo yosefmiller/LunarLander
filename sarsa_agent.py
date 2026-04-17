@@ -1,18 +1,20 @@
 import os
 import random
 import time
-from collections import defaultdict
-from typing import List
+from collections import defaultdict, deque
+from functools import reduce
+from typing import List, Dict, Tuple
 
 import numpy as np
 import pygame
 from tqdm import tqdm
 from utils import plot_learning_curve, rand_argmax
-from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer, EpisodeResult
+from lunar_lander_env import (SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, RandomLunarLander,
+    Renderer, EpisodeResult, LunarLanderState,  PAD_WIDTH)
 from base_agent import BaseAgent
 
 class SARSAAgent(BaseAgent):
-    def __init__(self, n_actions=4, alpha=0.1, gamma=0.99, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.05):
+    def __init__(self, n_actions=4, n_step=1, alpha=0.1, gamma=0.99, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.05):
         """
         SARSA Agent for the Lunar Lander environment.
 
@@ -24,6 +26,7 @@ class SARSAAgent(BaseAgent):
         5. It updates the Q-table using the SARSA update rule: Q(S,A) = Q(S,A) + alpha * [R + gamma * Q(S', A') - Q(S,A)]
 
         :param n_actions: Number of discrete actions available in the environment (e.g., 2 for main engine on/off, or 4 for main engine + left/right thrusters).
+        :param n_step: Number of steps in trajectory to use for n-step SARSA updates. A value of 1 corresponds to standard SARSA, while higher values allow the agent to learn from longer sequences of experience.
         :param alpha: Learning rate (0 < alpha <= 1). Higher values mean the agent learns more from new experiences.
         :param gamma: Discount factor (0 <= gamma < 1). Higher values mean the agent values future rewards more.
         :param epsilon: Initial exploration rate (0 <= epsilon <= 1). Higher values mean the agent explores more at the start.
@@ -32,6 +35,7 @@ class SARSAAgent(BaseAgent):
         """
 
         self.n_actions = n_actions
+        self.n_step = n_step
         
         # Hyperparameters
         self.alpha = alpha                  # Learning rate
@@ -46,27 +50,34 @@ class SARSAAgent(BaseAgent):
         # --- Discretization Bins ---
         # np.digitize returns the bin index. Out of bounds values go into the first/last bins.
         # We increase resolution for y and vy as they are critical for the landing criteria.
-        x_bins = np.concatenate([
-                    np.array([-0.6, -0.3, -0.25]),
-                    np.linspace(-0.2, 0.2, 7),   # high resolution near pad
-                    np.array([0.25, 0.3, 0.6])
-                ])
-        y_bins = np.concatenate([
-                    np.linspace(0, 0.01, 4),      # landing zone precision
-                    np.array([0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 0.8])
-                ])
-        vx_bins = np.array([-0.5, -0.3, -0.1, -0.02, 0.02, 0.1, 0.3, 0.5])
-        vy_bins = np.concatenate([
-                    np.array([-0.5, -0.3, -0.1, -0.05]),
-                    np.linspace(-0.05, 0.05, 5),   # critical landing region
-                    np.array([0.05, 0.1, 0.3, 0.5])
-                ])
-        angle_bins = np.concatenate([
-                        np.array([-1.0, -0.5, -0.2]),
-                        np.linspace(-0.2, 0.2, 7),   # upright precision
-                        np.array([0.2, 0.5, 1.0])
-                    ])
-        ang_vel_bins = np.array([-1.0, -0.5, -0.2, -0.05, 0.05, 0.2, 0.5, 1.0])
+        # x_bins = np.concatenate([
+        #             np.array([-0.6, -0.3, -0.25]),
+        #             np.linspace(-0.2, 0.2, 7),   # high resolution near pad
+        #             np.array([0.25, 0.3, 0.6])
+        #         ])
+        # y_bins = np.concatenate([
+        #             np.linspace(0, 0.01, 4),      # landing zone precision
+        #             np.array([0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 0.8])
+        #         ])
+        # vx_bins = np.array([-0.5, -0.3, -0.1, -0.02, 0.02, 0.1, 0.3, 0.5])
+        # vy_bins = np.concatenate([
+        #             np.array([-0.5, -0.3, -0.1, -0.05]),
+        #             np.linspace(-0.05, 0.05, 5),   # critical landing region
+        #             np.array([0.05, 0.1, 0.3, 0.5])
+        #         ])
+        # angle_bins = np.concatenate([
+        #                 np.array([-1.0, -0.5, -0.2]),
+        #                 np.linspace(-0.2, 0.2, 7),   # upright precision
+        #                 np.array([0.2, 0.5, 1.0])
+        #             ])
+        # ang_vel_bins = np.array([-1.0, -0.5, -0.2, -0.05, 0.05, 0.2, 0.5, 1.0])
+
+        x_bins = [-1.05, -0.7, -0.35, 0.0, 0.35, 0.7, 1.05]
+        y_bins = [0.387, 0.565, 0.677, 0.754, 0.801, 0.835, 0.902]
+        vx_bins = [-1.485, -0.993, -0.502, -0.011, 0.48, 0.971, 1.462]
+        vy_bins = [-0.633, -0.364, -0.256, -0.192, -0.138, -0.096, -0.04]
+        angle_bins = [-1.329, -0.703, -0.36, -0.094, 0.083, 0.324, 0.983]
+        ang_vel_bins = [-0.327, -0.192, -0.096, -0.038, 0.038, 0.115, 0.25]
 
         self.bins = {
             'x': x_bins,
@@ -81,7 +92,47 @@ class SARSAAgent(BaseAgent):
     def name(self) -> str:
         return "SARSA"
 
-    def discretize(self, state):
+    def get_number_of_states(self) -> int:
+        """
+        Calculates the total number of discrete states based on the defined bins for each state variable.
+        :return: int
+        """
+        bin_sizes = [len(b) + 1 for b in self.bins.values()]  # +1 because digitize can return an index equal to len(bins)
+        return reduce(lambda x, y: x * y, bin_sizes)
+
+    def get_states(self) -> Dict[str, np.ndarray]:
+        """
+        Returns a list of discrete states based on the defined bins for each state variable.
+        :return: dict
+        """
+        return {
+            name: np.concatenate([[-np.inf], bins, [np.inf]])  # Include out-of-bounds bins
+            for name, bins in self.bins.items()
+        }
+
+    def get_number_of_winning_states(self) -> int:
+        """
+        Calculates the number of winning states based on the defined bins for each state variable.
+        :return: int
+        """
+        max_vy = 2.5 / 10
+        max_vx = 2.0 / 10
+        max_theta = 0.5
+        max_y = 3.0
+        max_x = PAD_WIDTH / 2
+
+        # Calculate how many bins fall within the "safe" landing criteria
+        safe_x_bins = sum(1 for b in self.bins['x'] if abs(b) < max_x)
+        safe_y_bins = sum(1 for b in self.bins['y'] if b < max_y)
+        safe_vx_bins = sum(1 for b in self.bins['vx'] if abs(b) < max_vx)
+        safe_vy_bins = sum(1 for b in self.bins['vy'] if abs(b) < max_vy)
+        safe_theta_bins = sum(1 for b in self.bins['theta'] if abs(b) < max_theta)
+        safe_omega_bins = len(self.bins['omega'])
+
+        # The number of winning states is the product of the safe bins for each variable
+        return safe_vy_bins * safe_vx_bins * safe_theta_bins * safe_y_bins * safe_x_bins * safe_omega_bins
+
+    def discretize(self, state: LunarLanderState) -> Tuple[int, int, int, int, int, int]:
         """Converts the continuous state dataclass into a discrete tuple, ignoring fuel."""
         # Digitize returns an integer representing which bin the value falls into
         bin_x = np.digitize(state.x, self.bins['x'])
@@ -102,16 +153,23 @@ class SARSAAgent(BaseAgent):
         # Exploit: return the action with the highest Q-value
         return rand_argmax(self.q_table[state_tuple])
 
-    def update(self, state_tuple, action, reward, next_state_tuple, next_action, done):
-        """Applies the SARSA update rule."""
-        current_q = self.q_table[state_tuple][action]
+    def update(self, trajectory: List[Tuple], next_state_tuple=None, next_action=None, done=False):
+        """Applies the n-step SARSA update rule."""
+        if not trajectory:
+            return
         
-        # If the episode is over, the expected future reward is 0
-        next_q = 0 if done else self.q_table[next_state_tuple][next_action]
+        # Compute n-step return
+        G = 0
+        for i, (s, a, r) in enumerate(trajectory):
+            G += (self.gamma ** i) * r
+        if not done and next_state_tuple is not None and next_action is not None:
+            G += (self.gamma ** self.n_step) * self.q_table[next_state_tuple][next_action]
 
-        # SARSA Formula: Q(S,A) = Q(S,A) + alpha * [R + gamma * Q(S', A') - Q(S,A)]
-        new_q = current_q + self.alpha * (reward + self.gamma * next_q - current_q)
-        self.q_table[state_tuple][action] = new_q
+        # Update the first state-action in trajectory
+        s_update, a_update, _ = trajectory[0]
+        current_q = self.q_table[s_update][a_update]
+        new_q = current_q + self.alpha * (G - current_q)
+        self.q_table[s_update][a_update] = new_q
 
     def decay_epsilon(self):
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
@@ -133,11 +191,11 @@ class SARSAAgent(BaseAgent):
               logging_rate=500) -> List[EpisodeResult]:
         """Trains the agent on the given environment and returns episode history."""
         episode_history: List[EpisodeResult] = []
-        total_bins = len(self.bins['x']) * len(self.bins['y']) * len(self.bins['vx']) * len(self.bins['vy']) * len(self.bins['theta']) * len(self.bins['omega'])
+        total_bins = self.get_number_of_states()
 
         # Save Q table periodically
         os.makedirs(chkpt_path, exist_ok=True)
-        ckpt_interval = max(1, episodes // 3)
+        ckpt_interval = max(1, episodes // 5)
 
         if debug:
             print(f"Training for {episodes} episodes...")
@@ -152,17 +210,21 @@ class SARSAAgent(BaseAgent):
 
             total_reward = 0.0
             done = False
+            trajectory = deque(maxlen=self.n_step)  # Buffer for n-step
 
             while not done:
                 # Step the environment
                 next_state, reward, done, result = env.step(action)
                 next_state_tuple = self.discretize(next_state)
-
-                # SARSA requires choosing the next action BEFORE the update
                 next_action = self.act(next_state_tuple)
 
-                # Update Q-Table
-                self.update(state_tuple, action, reward, next_state_tuple, next_action, done)
+                # Store in trajectory
+                trajectory.append((state_tuple, action, reward))
+
+                # If trajectory is full or episode ended, update
+                if len(trajectory) == self.n_step or done:
+                    # Update using n-step
+                    self.update(list(trajectory), next_state_tuple, next_action, done)
 
                 # Progress to next step
                 state_tuple = next_state_tuple
@@ -189,6 +251,7 @@ class SARSAAgent(BaseAgent):
             # Save Q table checkpoints
             if (ep + 1) % ckpt_interval == 0:
                 np.save(f"{chkpt_path}/ckpt_ep_{ep+1:06d}.npy", dict(self.q_table))
+                # self.show_progress(env, episodes=1)
 
         time_elapsed = time.time() - start
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
@@ -203,7 +266,7 @@ class SARSAAgent(BaseAgent):
         """Runs the trained agent and returns average reward."""
         episode_history: List[EpisodeResult] = []
 
-        for ep in tqdm(range(episodes), disable=(not debug)):
+        for ep in tqdm(range(episodes), disable=True):
             state = env.reset()
             state_tuple = self.discretize(state)
             done = False
@@ -267,17 +330,22 @@ if __name__ == "__main__":
     # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
     # lunar_env = LLE_XOffset(debug=True)
     # lunar_env = LLE_InitialVelocity(debug=True)
-    lunar_env = LunarLanderEnv(debug=False)
+    lunar_env = LunarLanderEnv(debug=True, max_number_of_seconds=25)
+    # lunar_env = RandomLunarLander(debug=True)
 
     # Agent
-    sarsa_agent = SARSAAgent(n_actions=num_actions)  #.load()
+    sarsa_agent = SARSAAgent(n_actions=num_actions, n_step=1, epsilon_decay=0.9995)  #.load()
+    print(f"Number of discrete states: {sarsa_agent.get_number_of_states():,}")
+    print(f"Number of winning states: {sarsa_agent.get_number_of_winning_states():,}")
+    for bin, states in sarsa_agent.get_states().items():
+        print(bin, [f"{s:.3f}" for s in states])
 
     # Train the agent and save the Q-table
     history = sarsa_agent.train(lunar_env, episodes=50000, debug=True)
-    plot_learning_curve([h['reward'] for h in history], agent_type="SARSA", ylim=(-150, 200))
+    plot_learning_curve([h['reward'] for h in history], agent_type="SARSA")
 
     # Evaluate and render the trained agent
-    sarsa_agent.evaluate(lunar_env, episodes=1000)
+    sarsa_agent.evaluate(lunar_env, episodes=1000, debug=True)
 
     # Show a few episodes of the trained agent
     sarsa_agent.show_progress(lunar_env, episodes=5)
