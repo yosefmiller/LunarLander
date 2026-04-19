@@ -1,5 +1,5 @@
-from utils import plot_learning_curve
-from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
+from utils import plot_learning_curve, save_as_gif
+from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv , Renderer
 import pygame
 import os
 import time
@@ -59,17 +59,20 @@ class SARSALambdaAgent:
     def __init__(self, 
                  actions=4,
                  alpha=0.1,
+                 gamma=0.99,
+                 lam=0.9,
+                 eps_decay=0.995,
                  state_low=[-1.5, -0.5, -2, -2, -1.0, -5],
                  state_high=[1.5, 1.5, 2, 2, 1.0, 5]):
         self.actions = actions        
         self.tc = TileCoder(state_low, state_high)
         
         self.alpha = alpha / self.tc.tilings
-        self.gamma = 0.99
-        self.lam = 0.9
+        self.gamma = gamma
+        self.lam = lam
         
         self.epsilon = 1.0
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = eps_decay
         self.epsilon_min = 0.05
         
         # Use dictionaries for sparse representation
@@ -91,7 +94,7 @@ class SARSALambdaAgent:
             q += self.w.get(key, 0.0)
         return q
     
-    def choose_action(self, tiles, evaluate=False):
+    def act(self, tiles, evaluate=False):
         """
         Choose an action based on the current state and epsilon-greedy policy.
 
@@ -190,7 +193,7 @@ class SARSALambdaAgent:
         for ep in tqdm(range(episodes), disable=debug):
             obs = env.reset()
             tiles = self.tc.get_tiles(obs)
-            action = self.choose_action(tiles)
+            action = self.act(tiles)
             self.e = {}
 
             done = False
@@ -203,7 +206,7 @@ class SARSALambdaAgent:
 
                 # Use tiles to determine next action
                 next_tiles = self.tc.get_tiles(obs_next)
-                next_action = self.choose_action(next_tiles)
+                next_action = self.act(next_tiles)
 
                 # Update the weights
                 self.update(tiles, action, reward, next_tiles, next_action)
@@ -247,7 +250,7 @@ class SARSALambdaAgent:
         np.save(f"{chkpt_path}/training_returns.npy", rewards_history)
         np.save(f"{chkpt_path}/training_landing_results.npy", result_history)
 
-        return rewards_history
+        return rewards_history, time_elapsed
 
     def evaluate(self, env, episodes=100, debug=False):
         """Runs the trained agent and returns average reward."""
@@ -263,7 +266,7 @@ class SARSALambdaAgent:
             ep_duration = 0
 
             while not done:
-                action = self.choose_action(tiles, evaluate=True)
+                action = self.act(tiles, evaluate=True)
                 obs, reward, done, result, _ = env.step(action)
                 tiles = self.tc.get_tiles(obs)
                 total_reward += reward            
@@ -284,7 +287,7 @@ class SARSALambdaAgent:
 
         return total_rewards, avg_duration, results
 
-    def show_progress(self, env, episodes=5):
+    def show_progress(self, env, episodes=5, save_gif=False, outdir="sarsa_lambda_recordings"):
         """
         Evaluate the trained agent by running it in the environment for a specified number of episodes and rendering the results.
         
@@ -292,7 +295,7 @@ class SARSALambdaAgent:
         :param agent: The trained agent to be evaluated.
         :param num_episodes: The number of episodes to run for evaluation.
         """
-        renderer = Renderer(env)
+        renderer = Renderer(env, save_gif=save_gif, output_dir=outdir)
 
         for ep in range(episodes):
             obs = env.reset()
@@ -309,11 +312,16 @@ class SARSALambdaAgent:
                         pygame.quit()
                         return
                     
-                action = self.choose_action(tiles, evaluate=True)
-                obs, reward, done, _, _ = env.step(action)
+                action = self.act(tiles, evaluate=True)
+                obs, reward, done, result, _ = env.step(action)
                 tiles = self.tc.get_tiles(obs)
-                total_reward += reward            
+                total_reward += reward 
+
                 renderer.render(action)
+
+            # Save GIF if enabled
+            if save_gif:
+                save_as_gif(renderer=renderer, landing_result=result)
 
             print(f"Episode {ep + 1}: Total Reward={total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
@@ -333,11 +341,11 @@ if __name__ == "__main__":
     agent = SARSALambdaAgent(actions=num_actions)
 
     # Train the agent
-    rewards = agent.train(lunar_env, episodes=25000, debug=True)
+    rewards, _ = agent.train(lunar_env, episodes=25000, debug=True)
     plot_learning_curve(rewards, agent_type="SARSA Lambda (with Tile Coding)")
 
     # Evaluate and render the trained agent
-    agent.evaluate(lunar_env, episodes=1000)
+    agent.evaluate(lunar_env, episodes=1000, debug=True)
 
     # Evaluate and render the trained agent
     agent.show_progress(lunar_env, episodes=5)

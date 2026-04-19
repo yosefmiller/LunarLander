@@ -5,7 +5,7 @@ from collections import defaultdict
 import numpy as np
 import pygame
 from tqdm import tqdm
-from utils import plot_learning_curve
+from utils import plot_learning_curve, save_as_gif
 from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 
 class SARSAAgent:
@@ -42,28 +42,12 @@ class SARSAAgent:
         
         # --- Discretization Bins ---
         # np.digitize returns the bin index. Out of bounds values go into the first/last bins.
-        # We increase resolution for y and vy as they are critical for the landing criteria.
-        x_bins = np.concatenate([
-                    np.array([-0.6, -0.3, -0.25]),
-                    np.linspace(-0.2, 0.2, 7),   # high resolution near pad
-                    np.array([0.25, 0.3, 0.6])
-                ])
-        y_bins = np.concatenate([
-                    np.linspace(0, 0.01, 4),      # landing zone precision
-                    np.array([0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 0.8])
-                ])
-        vx_bins = np.array([-0.5, -0.3, -0.1, -0.02, 0.02, 0.1, 0.3, 0.5])
-        vy_bins = np.concatenate([
-                    np.array([-0.5, -0.3, -0.1, -0.05]),
-                    np.linspace(-0.05, 0.05, 5),   # critical landing region
-                    np.array([0.05, 0.1, 0.3, 0.5])
-                ])
-        angle_bins = np.concatenate([
-                        np.array([-1.0, -0.5, -0.2]),
-                        np.linspace(-0.2, 0.2, 7),   # upright precision
-                        np.array([0.2, 0.5, 1.0])
-                    ])
-        ang_vel_bins = np.array([-1.0, -0.5, -0.2, -0.05, 0.05, 0.2, 0.5, 1.0])
+        x_bins = [-1.05, -0.7, -0.35, 0.0, 0.35, 0.7, 1.05]
+        y_bins = [0.387, 0.565, 0.677, 0.754, 0.801, 0.835, 0.902]
+        vx_bins = [-1.485, -0.993, -0.502, -0.011, 0.48, 0.971, 1.462]
+        vy_bins = [-0.633, -0.364, -0.256, -0.192, -0.138, -0.096, -0.04]
+        angle_bins = [-1.329, -0.703, -0.36, -0.094, 0.083, 0.324, 0.983]
+        ang_vel_bins = [-0.327, -0.192, -0.096, -0.038, 0.038, 0.115, 0.25]
 
         self.bins = {
             'x': x_bins,
@@ -196,9 +180,9 @@ class SARSAAgent:
         # save final checkpoint, episode returns, and landing results
         np.save(f"{chkpt_path}/best_qtable_values.npy", dict(self.q_table))
         np.save(f"{chkpt_path}/training_returns.npy", rewards_history)
-        np.save(f"{chkpt_path}/training_landing_results.npy", result_history)
+        np.save(f"{chkpt_path}/training_landing_results.npy", dict(result_history))
 
-        return rewards_history
+        return rewards_history, time_elapsed
 
     def evaluate(self, env, episodes=100, debug=False):
         """Runs the trained agent and returns average reward."""
@@ -235,9 +219,9 @@ class SARSAAgent:
 
         return total_rewards, avg_duration, results
 
-    def show_progress(self, env, episodes=5, save_gif=False, gif_path="dqn_agent_progress.gif"):
+    def show_progress(self, env, episodes=5, save_gif=False, outdir="sarsa_agent_recordings"):
         """Runs the trained agent and renders the environment."""
-        renderer = Renderer(env)
+        renderer = Renderer(env, save_gif=save_gif, output_dir=outdir)
         
         for ep in range(episodes):
             state = env.reset()
@@ -257,15 +241,19 @@ class SARSAAgent:
                 # Greedy action selection (epsilon=0)
                 action = self.act(state_tuple, evaluate=True)
                 
-                next_state, reward, done, _, _ = env.step(action)
+                next_state, reward, done, result, _ = env.step(action)
                 state_tuple = self.discretize(next_state)
                 total_reward += reward
                 
                 renderer.render(action)
-                
+
+            # Save GIF if enabled
+            if save_gif:
+                save_as_gif(renderer=renderer, landing_result=result)
+            
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
-            
+
         pygame.quit()
 
 if __name__ == "__main__":
@@ -280,13 +268,11 @@ if __name__ == "__main__":
     sarsa_agent = SARSAAgent(n_actions=num_actions)
 
     # Train the agent and save the Q-table
-    rewards = sarsa_agent.train(lunar_env,
-                                episodes=50000,
-                                debug=True)
+    rewards, _ = sarsa_agent.train(lunar_env, episodes=50000, debug=True)
     plot_learning_curve(rewards, agent_type="SARSA", ylim=(-150, 200))
 
     # Evaluate and render the trained agent
-    sarsa_agent.evaluate(lunar_env, episodes=1000)
+    sarsa_agent.evaluate(lunar_env, episodes=1000, debug=True)
 
     # Show a few episodes of the trained agent
     sarsa_agent.show_progress(lunar_env, episodes=5)

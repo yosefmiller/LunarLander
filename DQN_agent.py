@@ -7,7 +7,7 @@ import time
 import threading
 import queue
 from tqdm import tqdm
-from utils import plot_learning_curve
+from utils import plot_learning_curve, save_as_gif
 from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
 
 class QNetwork(nn.Module):
@@ -156,8 +156,8 @@ class DQNAgent:
         # Keep track of the number of completed training steps
         self.steps_done = 0
 
-    def act(self, state, eval=False):
-        if not eval and np.random.rand() < self.epsilon:
+    def act(self, state, evaluate=False):
+        if not evaluate and np.random.rand() < self.epsilon:
             return np.random.randint(self.num_actions)
         else:
             with torch.no_grad():
@@ -165,11 +165,11 @@ class DQNAgent:
                 q_values = self.q_network(state)
                 return torch.argmax(q_values).cpu().numpy()
             
-    def act_batch(self, states, eval=False):
+    def act_batch(self, states, evaluate=False):
         """Select actions for a batch of states with per-environment epsilon-greedy."""
         batch_size = len(states)
         
-        if eval:
+        if evaluate:
             # Pure exploitation during evaluation
             with torch.no_grad():
                 states_tensor = torch.FloatTensor(states).to(self.q_network.device)
@@ -412,7 +412,7 @@ class DQNAgent:
         # Stop the checkpoint writer
         self.ckpt_writer.stop(wait=True)
 
-        return avg_returns_across_envs
+        return avg_returns_across_envs, time_elapsed
     
     def evaluate(self, env, episodes=100, debug=False):
         """ 
@@ -429,7 +429,7 @@ class DQNAgent:
             ep_duration = 0
             
             while not done:
-                action = self.act(obs, eval=True)  # Greedy action selection
+                action = self.act(obs, evaluate=True)  # Greedy action selection
                 next_obs, reward, done, result, _ = env.step(action)
                 obs = next_obs.to_array()
                 total_reward += reward
@@ -450,11 +450,11 @@ class DQNAgent:
 
         return total_rewards, avg_duration, results
     
-    def show_progress(self, env, episodes=5, save_gif=False, gif_path="dqn_agent_progress.gif"):
+    def show_progress(self, env, episodes=5, save_gif=False, outdir="dqn_agent_recordings"):
         """
         Runs the trained agent and renders the environment.
         """
-        renderer = Renderer(env)
+        renderer = Renderer(env, save_gif=save_gif, output_dir=outdir)
         
         for ep in range(episodes):
             obs = env.reset().to_array()
@@ -471,18 +471,18 @@ class DQNAgent:
                         return
 
                 # Greedy action selection (epsilon=0)
-                action = self.act(obs, eval=True)
+                action = self.act(obs, evaluate=True)
                 
-                next_obs, reward, done, _, _ = env.step(action)
+                next_obs, reward, done, result, _ = env.step(action)
                 obs = next_obs.to_array()
                 total_reward += reward
 
-                # Capture frame for GIF if enabled
-                if save_gif:
-                    renderer.capture_frame()
-
                 renderer.render(action)
-                
+            
+            # Save GIF if enabled
+            if save_gif:
+                save_as_gif(renderer=renderer, landing_result=result)
+
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode```
 
@@ -581,15 +581,12 @@ if __name__ == "__main__":
 
     # Vectorized training with multiple environments in parallel
     chkpt_path="DQN_Agent_checkpoints/agent1"
-    # rewards, losses, logging_intervals = agent.train(SimpleLunarLanderEnv, episodes=3000, debug=True)
-    # rewards, losses, logging_intervals = agent.train(LLE_XOffset, episodes=3000, debug=True)
-    # rewards, losses, logging_intervals = agent.train(LLE_InitialVelocity, episodes=3000, debug=True)
-    rewards = agent.train(LunarLanderEnv,
-                          episodes=5000,
-                          chkpt_path=chkpt_path,
-                          debug=True,
-                          time_based_logging=True,
-                        )
+    rewards, _ = agent.train(LunarLanderEnv,
+                             episodes=5000,
+                             chkpt_path=chkpt_path,
+                             debug=True,
+                             time_based_logging=True
+                             )
 
     # Training curves
     num_parallel_envs = 8
@@ -602,7 +599,7 @@ if __name__ == "__main__":
     plot_learning_curve(losses, agent_type='DQN', xticks=xticks, ylabel='Avg Q Network Loss')
 
     # Evaluate the trained agent
-    rewards, avg_duration, results = agent.evaluate(lunar_env, episodes=100)
+    rewards, avg_duration, results = agent.evaluate(lunar_env, episodes=100, debug=True)
 
     # Show a few episodes of the trained agent
     agent.show_progress(lunar_env, episodes=5)

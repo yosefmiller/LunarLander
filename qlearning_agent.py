@@ -63,7 +63,7 @@ if __name__ == "__main__":
     plot_learning_curve(rewards, agent_type='Q-Learning', ylim=(-150, 200))
 
     # Evaluate and render the trained agent
-    qlearning_agent.evaluate(lunar_env, episodes=1000)
+    qlearning_agent.evaluate(lunar_env, episodes=1000, debug=True)
 
     # Show a few episodes of the trained agent
     qlearning_agent.show_progress(lunar_env, episodes=5)

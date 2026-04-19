@@ -3,6 +3,9 @@ from dataclasses import dataclass
 import numpy as np
 import pygame
 import math
+from datetime import datetime
+import imageio
+import os
 
 # --- Constants ---
 FPS = 60
@@ -51,6 +54,8 @@ DARK_GREY = (50, 50, 50)
 BLUE = (50, 150, 255)
 ORANGE = (255, 165, 0)
 
+# Action Space
+ACTIONS = {0: 'do nothing', 1: 'use main engine', 2: 'use left engine', 3: 'use right engine'}
 
 @dataclass
 class LunarLanderState:
@@ -93,6 +98,7 @@ class LunarLanderEnv:
 
 
     def __init__(self, max_number_of_steps=1000, debug=False):
+        self.action_space = ACTIONS
         self.max_number_of_steps = max_number_of_steps
         self.debug=debug
         self.reset()
@@ -431,13 +437,38 @@ class LLE_InitialVelocity(LunarLanderEnv):
         self.omega = 0.0
 
 class Renderer:
-    def __init__(self, env):
+    def __init__(self,
+                 env,
+                 save_video=False,
+                 save_gif=False,
+                 output_dir="recordings"):
+        """
+        Initialize Renderer
+
+        Args:
+            env: LunarLanderEnv instance
+            save_video: If True, saves rendering as MP4 video
+            save_gif: If True, saves rendering as GIF
+            output_dir: Directory to save recordings
+        """
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption("Apollo Lunar Descent Simulation")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("monospace", 16)
         self.env = env
+
+        # Recording setup
+        self.save_video = save_video
+        self.save_gif = save_gif
+        self.output_dir = output_dir
+        self.frames = []
+        self.recording_active = False
+        self.episode_count = 0
+
+        if save_video or save_gif:
+            os.makedirs(output_dir, exist_ok=True)
+            self.recording_active = True
 
     @staticmethod
     def world_to_screen(x, y):
@@ -547,19 +578,102 @@ class Renderer:
 
         pygame.display.flip()
 
+        # Capture frame for recording
+        if self.recording_active:
+            # Convert pygame surface to numpy array
+            frame = pygame.surfarray.array3d(self.screen)
+            frame = np.transpose(frame, (1, 0, 2))  # Pygame uses (width, height, channels)
+            self.frames.append(frame.copy())
+
+    def start_recording(self):
+        """Start a new recording session."""
+        self.frames = []
+        self.recording_active = True
+
+    def stop_recording(self):
+        """Stop recording without saving."""
+        self.recording_active = False
+        self.frames = []
+
+    def save_recording(self, filename=None):
+        """Save recorded frames as video or GIF."""
+        if not self.frames:
+            print("No frames to save!")
+            return
+
+        if filename is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"lunar_landing_{timestamp}"
+
+        # Remove extension if provided
+        filename = os.path.splitext(filename)[0]
+
+        try:
+            if self.save_video:
+                video_path = os.path.join(self.output_dir, f"{filename}.mp4")
+                print(f"Saving video to {video_path}...")
+                imageio.mimsave(video_path, self.frames, fps=FPS, codec='libx264', 
+                              quality=8, pixelformat='yuv420p')
+                print(f"Video saved successfully! ({len(self.frames)} frames)")
+
+            if self.save_gif:
+                gif_path = os.path.join(self.output_dir, f"{filename}.gif")
+                print(f"Saving GIF to {gif_path}...")
+                # Reduce frame rate for GIF to reduce file size
+                gif_frames = self.frames[::2] + [self.frames[-1]] # Every other frame
+                imageio.mimsave(gif_path, gif_frames, fps=FPS//2, loop=0)
+                print(f"GIF saved successfully! ({len(gif_frames)} frames)")
+
+        except Exception as e:
+            print(f"Error saving recording: {e}")
+        finally:
+            self.frames = []
+            self.episode_count += 1
 
 def main():
     # env = LunarLanderEnv()
     env = SimpleLunarLanderEnv()
-    renderer = Renderer(env)
+
+    # Initialize renderer with recording options
+    renderer = Renderer(
+        env,
+        save_video=True,  # Set to True to save as MP4
+        save_gif=False,    # Set to True to save as GIF
+        output_dir="lunar_recordings"
+    )
+
     running = True
+    episode_done = False
 
     while running:
         renderer.clock.tick(FPS)
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT: running = False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_r: env.reset()
 
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:
+                    # Save current episode before reset
+                    if renderer.recording_active and len(renderer.frames) > 0:
+                        renderer.save_recording()
+                    env.reset()
+                    episode_done = False
+                    print("\n" + "="*60)
+                    print("Environment Reset")
+                    print("="*60)
+
+                if event.key == pygame.K_s:
+                    # Manual save
+                    if len(renderer.frames) > 0:
+                        renderer.save_recording()
+                    else:
+                        print("No frames to save!")
+                        
+                if event.key in [pygame.K_q, pygame.K_ESCAPE]:
+                    running = False
+
+        # Get keyboard input for actions
         keys = pygame.key.get_pressed()
         action = 0
         if keys[pygame.K_UP]:
@@ -569,11 +683,41 @@ def main():
         elif keys[pygame.K_RIGHT]:
             action = 3
 
-        env.step(action)
+        # Step environment if not done
+        if not episode_done:
+            state, reward, done, result, info = env.step(action)
+
+            if done:
+                episode_done = True
+                crashed, landed, max_steps = result
+
+                print("\n" + "="*60)
+                if landed:
+                    print("🌙 SUCCESSFUL LANDING!")
+                    print(f"   Fuel Remaining: {env.fuel:.1f} kg")
+                    print(f"   Fuel Used: {FUEL_MASS_START - env.fuel:.1f} kg")
+                elif crashed:
+                    print("💥 CRASH!")
+                    print(f"   Reason: {env.crash_reason}")
+                elif max_steps:
+                    print("⏱️  MISSION TIMEOUT")
+                print("="*60)
+
+                # Auto-save recording when episode ends
+                if renderer.recording_active:
+                    status = "landed" if landed else ("crashed" if crashed else "timeout")
+                    filename = f"episode_{renderer.episode_count}_{status}"
+                    # renderer.save_recording(filename)
+
+        # Render
         renderer.render(action)
 
-    pygame.quit()
+    # Final save if there are unsaved frames
+    if renderer.recording_active and len(renderer.frames) > 0:
+        renderer.save_recording("final_episode")
 
+    pygame.quit()
+    print("\nSimulation ended. Goodbye!")
 
 if __name__ == "__main__":
     main()

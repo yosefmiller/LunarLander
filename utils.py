@@ -1,5 +1,6 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from lunar_lander_env import FPS
 
 def plot_learning_curve(rewards_history, **config):
     # Parse plotting configuration
@@ -26,7 +27,8 @@ def plot_learning_curve(rewards_history, **config):
     plt.title(f"{agent_type} Agent Learning Curve - {environment}", fontsize=18)
     plt.xlabel(xlabel, fontsize=16)
     if xticks is not None:
-        plt.xticks(np.arange(0, len(rewards_history), step=xticks_step_factor), xticks, fontsize=14)
+        plt.xticks(np.arange(0, len(rewards_history), step=xticks_step_factor), xticks)
+    plt.xticks(fontsize=14)
     plt.ylabel(ylabel, fontsize=16)
     plt.yticks(fontsize=14)
     plt.ylim(ylim)
@@ -41,3 +43,14 @@ def plot_learning_curve(rewards_history, **config):
         return
     
     plt.show()
+
+def save_as_gif(renderer, landing_result):
+    """ Helper function to save the current episode as a GIF. """
+    # Render extra frames to make the landing result is captured
+    for _ in range(2 * FPS):
+        renderer.clock.tick(FPS)
+        renderer.render()
+    crashed, landed, max_steps = landing_result
+    status = "landed" if landed else ("crashed" if crashed else "timeout")
+    filename = f"episode_{renderer.episode_count}_{status}"
+    renderer.save_recording(filename)
