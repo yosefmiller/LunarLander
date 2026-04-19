@@ -7,6 +7,14 @@ from datetime import datetime
 import imageio
 import os
 
+# Additional graphics
+NASA_LOGO = pygame.image.load('graphics/nasa_logo.png')
+NASA_LOGO = pygame.transform.scale(NASA_LOGO, (30, 25))  # Resize
+ASTRONAUT = pygame.image.load('graphics/astronaut.png')
+ASTRONAUT = pygame.transform.scale(ASTRONAUT, (45, 50))  # Resize
+AMERICAN_FLAG = pygame.image.load('graphics/american_flag.png')
+AMERICAN_FLAG = pygame.transform.scale(AMERICAN_FLAG, (22, 15))  # Resize
+
 # --- Constants ---
 FPS = 60
 DT = 1.0 / FPS
@@ -51,8 +59,17 @@ RED = (255, 50, 50)
 GOLD = (212, 175, 55)  # Apollo Foil Gold
 GREY = (100, 100, 100)
 DARK_GREY = (50, 50, 50)
+SUPER_DARK_GREY = (30, 30, 30)
 BLUE = (50, 150, 255)
 ORANGE = (255, 165, 0)
+BEACON_BLUE = (0, 150, 255)
+EARTH_BLUE = (30, 144, 255)
+EARTH_GREEN = (34, 139, 34)
+EARTH_CLOUD = (240, 240, 255)
+SUN_YELLOW = (255, 255, 200)
+MOON_LIGHT_GREY = (120, 120, 120)
+MOON_DARK_GREY = (60, 60, 60)
+ROCK_GREY = (90, 90, 90)
 
 # Action Space
 ACTIONS = {0: 'do nothing', 1: 'use main engine', 2: 'use left engine', 3: 'use right engine'}
@@ -97,10 +114,19 @@ class LunarLanderEnv:
     moment_of_inertia: float
 
 
-    def __init__(self, max_number_of_steps=1000, debug=False):
+    def __init__(self, max_number_of_steps=1000, debug=False, pad_x_offset=0.0):
+        """
+        Initialize Lunar Lander Environment
+
+        Args:
+            max_number_of_steps: Maximum steps before episode terminates
+            debug: Enable debug printing
+            pad_x_offset: X-offset of landing pad from center in meters
+        """
         self.action_space = ACTIONS
         self.max_number_of_steps = max_number_of_steps
         self.debug=debug
+        self.pad_x_offset = pad_x_offset
         self.reset()
 
     def reset(self) -> LunarLanderState:
@@ -126,25 +152,27 @@ class LunarLanderEnv:
 
     def _init_state(self):
         # 1. INITIALIZATION (Apollo "High Gate" Style)
-        # Instead of dropping straight down, we come in with lateral speed.
-        # This requires a "Braking Burn".
-
-        start_x_range = [-60, -40] if np.random.rand() > 0.5 else [40, 60]
-        self.x = np.random.uniform(start_x_range[0], start_x_range[1])
-        self.y = np.random.uniform(40, 50)  # Start high up
+        rng = np.random.default_rng()
+        start_x_range = [-60, -40] if rng.uniform() > 0.5 else [40, 60]
+        self.x = rng.uniform(start_x_range[0], start_x_range[1])
+        self.y = rng.uniform(40, 50)  # Start high up
 
         # Velocity points towards the center, but fast
         direction = -1.0 if self.x > 0 else 1.0
-        self.vx = np.random.uniform(5.0, 10.0) * direction
-        self.vy = np.random.uniform(-2.0, 0.0)  # Slight downward drift
+        self.vx = rng.uniform(5.0, 10.0) * direction
+        self.vy = rng.uniform(-2.0, 0.0)  # Slight downward drift
 
         # Random initial tilt (imperfection)
-        self.theta = np.random.uniform(-0.2, 0.2)
+        self.theta = rng.uniform(-0.2, 0.2)
         self.omega = 0.0
 
     def _calculate_shaping(self) -> float:
         # Potential-based reward shaping
-        dist_penalty = np.sqrt(self.x ** 2 + self.y ** 2)
+        # Adjust target to account for pad offset
+        target_x = self.pad_x_offset
+        dist_x = self.x - target_x
+
+        dist_penalty = np.sqrt(dist_x ** 2 + self.y ** 2)
         vel_penalty = np.sqrt(self.vx ** 2 + self.vy ** 2)
         tilt_penalty = abs(self.theta)
         ang_vel_penalty = abs(self.omega)
@@ -259,7 +287,7 @@ class LunarLanderEnv:
 
             vel_safe = abs(self.vy) < 2.5 and abs(self.vx) < 2.0
             angle_safe = abs(self.theta) < 0.3
-            on_pad = abs(self.x) < (PAD_WIDTH / 2.0)
+            on_pad = abs(self.x - self.pad_x_offset) < (PAD_WIDTH / 2.0)
 
             # Physics adjustment to sit on ground
             min_y = min(left_foot[1], right_foot[1])
@@ -307,14 +335,14 @@ class LunarLanderEnv:
     def _get_state(self) -> LunarLanderState:
         # Normalize state variables to roughly -1.0 to 1.0 range for RL algorithms.
         return LunarLanderState(
-            x=self.x / 50.0,  # Relative Dist X (Normalized)
+            x=(self.x - self.pad_x_offset) / 50.0,  # Relative to pad
             y=self.y / 50.0,  # Relative Dist Y
             vx=self.vx / 10.0,  # Vel X
             vy=self.vy / 10.0,  # Vel Y
             theta=self.theta,  # Angle
             omega=self.omega,  # Angular Vel
             fuel=self.fuel / FUEL_MASS_START,
-            on_pad=1.0 if (abs(self.x) < PAD_WIDTH / 2) else 0.0  # Pad Contact Sensor
+            on_pad=1.0 if (abs(self.x - self.pad_x_offset) < PAD_WIDTH / 2) else 0.0
         )
 
 
@@ -334,19 +362,12 @@ class SimpleLunarLanderEnv(LunarLanderEnv):
         super().__init__()
 
     def _init_state(self):
-        """Override _init_sate() to provide simpler initial conditions."""
-        # Simple initialization: straight drop
-        self.x = 0.0  # Start centered on the pad
-        
-        self.y = np.random.uniform(40, 50)  # Start high up
-
-        # No lateral velocity
+        """Override _init_state() to provide simpler initial conditions."""
+        rng = np.random.default_rng()
+        self.x = self.pad_x_offset  # Start centered on the pad
+        self.y = rng.uniform(40, 50)
         self.vx = 0.0
-
-        # Randomized downward velocity (steeper than complex env)
-        self.vy = np.random.uniform(-3.0, -0.5)
-
-        # No initial tilt
+        self.vy = rng.uniform(-3.0, -0.5)
         self.theta = 0.0
         self.omega = 0.0
     
@@ -362,7 +383,7 @@ class SimpleLunarLanderEnv(LunarLanderEnv):
         # Potential-based reward shaping
         # Normalize variables so the initial potential is roughly -100 to -150.
         # This makes dense rewards comparable to the +/- 100 terminal rewards.
-        norm_x = self.x / 50.0
+        norm_x = (self.x - self.pad_x_offset) / 50.0
         norm_y = self.y / 50.0
         norm_vx = self.vx / 10.0
         norm_vy = self.vy / 10.0
@@ -388,20 +409,12 @@ class LLE_XOffset(LunarLanderEnv):
     - Randomized downward velocity (vy: -3.0 to -0.5 m/s)
     """
     def _init_state(self):
-        """Override _init_sate() to provide simpler initial conditions."""
-        # Add an x offset
-        start_x_range = [-15.0, -10.0] if np.random.rand() > 0.5 else [10.0, 15.0]
-        self.x = np.random.uniform(start_x_range[0], start_x_range[1])
-        
-        self.y = np.random.uniform(40, 50)  # Start high up
-
-        # No lateral velocity
+        rng = np.random.default_rng()
+        start_x_range = [-15.0, -10.0] if rng.uniform() > 0.5 else [10.0, 15.0]
+        self.x = rng.uniform(start_x_range[0], start_x_range[1]) + self.pad_x_offset
+        self.y = rng.uniform(40, 50)
         self.vx = 0.0
-
-        # Randomized downward velocity (steeper than complex env)
-        self.vy = np.random.uniform(-1.5, -0.5)
-
-        # No initial tilt
+        self.vy = rng.uniform(-1.5, -0.5)
         self.theta = 0.0
         self.omega = 0.0
 
@@ -418,21 +431,14 @@ class LLE_InitialVelocity(LunarLanderEnv):
     """
 
     def _init_state(self):
-        """Override _init_sate() to provide simpler initial conditions."""
-        # Add an x offset
-        start_x_range = [-30, -20] if np.random.rand() > 0.5 else [20, 30]
-        self.x = np.random.uniform(start_x_range[0], start_x_range[1])
+        rng = np.random.default_rng()
+        start_x_range = [-30, -20] if rng.uniform() > 0.5 else [20, 30]
+        self.x = rng.uniform(start_x_range[0], start_x_range[1]) + self.pad_x_offset
+        self.y = rng.uniform(40, 50)
         
-        self.y = np.random.uniform(40, 50)  # Start high up
-
-        # Horizontal velocity points towards the center, but fast
-        direction = -1.0 if self.x > 0 else 1.0
-        self.vx = np.random.uniform(1.0, 3.0) * direction
-
-        # Randomized downward velocity (steeper than complex env)
-        self.vy = np.random.uniform(-1.5, -0.5)
-
-        # No initial tilt
+        direction = -1.0 if self.x > self.pad_x_offset else 1.0
+        self.vx = rng.uniform(1.0, 3.0) * direction
+        self.vy = rng.uniform(-1.5, -0.5)
         self.theta = 0.0
         self.omega = 0.0
 
@@ -470,6 +476,81 @@ class Renderer:
             os.makedirs(output_dir, exist_ok=True)
             self.recording_active = True
 
+        # Beacon animation
+        self.beacon_timer = 0
+
+        # Generate terrain features (boulders, rocks, craters)
+        self._generate_terrain_features()
+
+        # Earth position in sky (upper right)
+        self.earth_pos = (SCREEN_WIDTH - 120, 80)
+        self.earth_radius = 40
+
+    def _generate_terrain_features(self):
+        """Generate random boulders, rocks, and craters for the moon surface."""
+        rng = np.random.default_rng(42) # For consistent terrain across renders
+
+        # Mountains
+        self.mountains = [
+            # mountain 1
+            [(150, SCREEN_HEIGHT - 130),  # Top-left
+            (250, SCREEN_HEIGHT - 130),  # Top-right
+            (300, SCREEN_HEIGHT - 100),  # Bottom-right
+            (100, SCREEN_HEIGHT - 100)   # Bottom-left
+            ],
+            # mountain 2
+            [(SCREEN_WIDTH - 350, SCREEN_HEIGHT - 120),  # Top-left
+            (SCREEN_WIDTH - 400, SCREEN_HEIGHT - 130),  # Peak
+            (SCREEN_WIDTH - 450, SCREEN_HEIGHT - 120),  # Top-right
+            (SCREEN_WIDTH - 550, SCREEN_HEIGHT - 90),  # Bottom-right
+            (SCREEN_WIDTH - 250, SCREEN_HEIGHT - 90)   # Bottom-left
+            ],
+            # mountain 3
+            [(SCREEN_WIDTH - 50, SCREEN_HEIGHT - 110),  # Top-left
+            (SCREEN_WIDTH - 10, SCREEN_HEIGHT - 120),  # Peak
+            (SCREEN_WIDTH, SCREEN_HEIGHT - 110),  # Top-right
+            (SCREEN_WIDTH, SCREEN_HEIGHT - 80),  # Bottom-right
+            (SCREEN_WIDTH - 100, SCREEN_HEIGHT - 80)   # Bottom-left
+            ]
+        ]
+
+        # Craters
+        self.craters = [
+            # crater 1
+            [(SCREEN_WIDTH - 250, SCREEN_HEIGHT - 60),  # Top-left
+             (SCREEN_WIDTH - 150, SCREEN_HEIGHT - 60),  # Top-right
+             (SCREEN_WIDTH - 100, SCREEN_HEIGHT - 70),  # Bottom-right
+             (SCREEN_WIDTH - 300, SCREEN_HEIGHT - 70)   # Bottom-left
+            ],
+            # crater 2
+            [(300, SCREEN_HEIGHT - 70),  # Top-left
+             (200, SCREEN_HEIGHT - 70),  # Top-right
+             (150, SCREEN_HEIGHT - 80),  # Bottom-right
+             (350, SCREEN_HEIGHT - 80)   # Bottom-left
+            ]
+        ]
+
+        # Boulders
+        self.boulders = []
+        for _ in range(6):
+            x = rng.uniform(0, SCREEN_WIDTH)
+            _, middle_ground = self.world_to_screen(0, 0)
+            offset = rng.uniform(-25, 25)
+            y = middle_ground + offset
+            size = rng.uniform(8, 25)
+            num_sides = rng.integers(5, 8)
+            self.boulders.append((x, y, size, num_sides))
+
+        # Small rocks
+        self.rocks = []
+        for _ in range(12):
+            x = rng.uniform(0, SCREEN_WIDTH)
+            _, middle_ground = self.world_to_screen(0, 0)
+            offset = rng.uniform(-25, 25)
+            y = middle_ground + offset
+            size = rng.uniform(2, 8)
+            self.rocks.append((x, y, size))
+
     @staticmethod
     def world_to_screen(x, y):
         # Center x on screen (Screen Center = World 0)
@@ -478,65 +559,237 @@ class Renderer:
         screen_y = int(SCREEN_HEIGHT - (GROUND_Y + y * SCALE))
         return screen_x, screen_y
 
+    def draw_earth(self):
+        """Draw Earth in the background with partial shadow from the Sun."""
+        cx, cy = self.earth_pos
+        radius = self.earth_radius
+
+        # Draw Earth base (blue)
+        pygame.draw.circle(self.screen, EARTH_BLUE, (cx, cy), radius)
+
+        # Add some green "continents" with irregular shapes
+        pygame.draw.circle(self.screen, EARTH_GREEN, (cx - 15, cy - 10), 12)
+        pygame.draw.circle(self.screen, EARTH_GREEN, (cx + 10, cy + 8), 15)
+        pygame.draw.circle(self.screen, EARTH_GREEN, (cx - 5, cy + 15), 8)
+        pygame.draw.circle(self.screen, EARTH_GREEN, (cx + 18, cy - 5), 10)
+
+        # Add white clouds
+        cloud_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        pygame.draw.circle(cloud_surface, (*EARTH_CLOUD, 100), (radius - 10, radius + 5), 8)
+        pygame.draw.circle(cloud_surface, (*EARTH_CLOUD, 120), (radius + 12, radius - 8), 6)
+        self.screen.blit(cloud_surface, (cx - radius, cy - radius))
+
+        # Draw shadow from the Sun (Sun is on the left side, so shadow is on right)
+        # Create a darker crescent on the right side
+        shadow_surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+        # Shadow circle shifted to create crescent effect
+        pygame.draw.circle(shadow_surface, (0, 0, 0, 120), (radius + 18, radius), radius)
+        self.screen.blit(shadow_surface, (cx - radius, cy - radius))
+
+        # Add atmospheric glow
+        glow_surface = pygame.Surface((radius * 3, radius * 3), pygame.SRCALPHA)
+        for i in range(3):
+            alpha = 30 - i * 8
+            pygame.draw.circle(glow_surface, (*EARTH_BLUE, alpha),
+                             (int(radius * 1.5), int(radius * 1.5)),
+                             radius + i * 5, 2)
+        self.screen.blit(glow_surface, (cx - int(radius * 1.5), cy - int(radius * 1.5)))
+
+    def draw_terrain_features(self, ground_px):
+        """Draw mountains, craters, boulders, and rocks on the moon surface."""
+
+        # Draw horizon mountains
+        pygame.draw.polygon(self.screen, MOON_DARK_GREY, self.mountains[0])
+        pygame.draw.polygon(self.screen, MOON_DARK_GREY, self.mountains[1])
+        pygame.draw.polygon(self.screen, MOON_DARK_GREY, self.mountains[2])
+
+        # Draw craters
+        pygame.draw.polygon(self.screen, MOON_DARK_GREY, self.craters[0])
+        pygame.draw.polygon(self.screen, MOON_DARK_GREY, self.craters[1])
+
+        # Draw boulders
+        for boulder_x, boulder_y, boulder_size, num_sides in self.boulders:
+            # Draw boulder as irregular polygon
+            pts = []
+            angles = np.linspace(0, 2*np.pi, num_sides, endpoint=False)
+            for i, angle in enumerate(angles):
+                # Add irregularity
+                r = boulder_size * (0.7 + (i % 3) * 0.2)
+                px = boulder_x + r * np.cos(angle)
+                py = boulder_y - boulder_size/2 + r * np.sin(angle) * 0.7
+                pts.append((int(px), int(py)))
+            pygame.draw.polygon(self.screen, ROCK_GREY, pts)
+            pygame.draw.polygon(self.screen, (70, 70, 70), pts, 2)
+
+            # Add highlight for 3D effect
+            highlight_pts = [(pts[0][0], pts[0][1] - 2),
+                           (pts[1][0], pts[1][1] - 1)]
+            if len(highlight_pts) == 2:
+                pygame.draw.line(self.screen, MOON_LIGHT_GREY,
+                               highlight_pts[0], highlight_pts[1], 2)
+
+        # Draw small rocks
+        for rock_x, rock_y, rock_size in self.rocks:
+            pygame.draw.circle(self.screen, (80, 80, 80),
+                             (int(rock_x), int(rock_y - rock_size/2)),
+                             int(rock_size))
+            # Add small highlight
+            pygame.draw.circle(self.screen, MOON_LIGHT_GREY,
+                             (int(rock_x - rock_size/4), int(rock_y - rock_size/2 - rock_size/4)),
+                             int(rock_size/3))
+
+    def draw_landing_pad(self):
+        """Draw the landing pad."""
+        pad_center = self.env.pad_x_offset
+        pad_left = self.env.pad_x_offset - PAD_WIDTH / 2
+        pad_right = self.env.pad_x_offset + PAD_WIDTH / 2
+        pad_center_px, pad_center_py = self.world_to_screen(pad_center, 0)
+
+        # Pad surface
+        pygame.draw.ellipse(self.screen, SUPER_DARK_GREY, (pad_center_px - 100, SCREEN_HEIGHT - 50, 200, 20))
+        pygame.draw.ellipse(self.screen, WHITE, (pad_center_px - 50, SCREEN_HEIGHT - 47, 100, 10), 2)
+
+        # Pad markers
+        for x in [pad_left, pad_right]:
+            px = self.world_to_screen(x, -1)
+            pygame.draw.line(self.screen, DARK_GREY, px,
+                           (px[0], px[1] - 20), 3)
+
+        # Landing marker circle
+        pygame.draw.circle(self.screen, WHITE, (int(pad_center_px), pad_center_py - 3), 5)
+        pygame.draw.circle(self.screen, DARK_GREY, (int(pad_center_px), pad_center_py - 3), 3)
+
+        # Draw H marking for helipad
+        h_font = pygame.font.SysFont("monospace", 24, bold=True)
+        h_text = h_font.render("H", True, WHITE)
+        h_rect = h_text.get_rect(center=(int(pad_center_px), pad_center_py - 18))
+        self.screen.blit(h_text, h_rect)
+
+    def draw_beacons(self, ground_px):
+        """Draw blinking blue beacons 5 meters on either side of landing pad."""
+        # Update beacon timer
+        self.beacon_timer += 1
+
+        # Beacons blink with 2-second period (120 frames at 60 FPS)
+        blink_on = (self.beacon_timer % 120) < 60
+
+        if blink_on:
+            # Left beacon (5 meters from left edge of pad)
+            left_beacon_world_x = self.env.pad_x_offset - PAD_WIDTH/2
+            left_beacon_x, _ = self.world_to_screen(left_beacon_world_x, 0)
+            _, left_beacon_y = self.world_to_screen(left_beacon_world_x, 1)
+
+            # Right beacon (5 meters from right edge of pad)
+            right_beacon_world_x = self.env.pad_x_offset + PAD_WIDTH/2
+            right_beacon_x, _ = self.world_to_screen(right_beacon_world_x, 0)
+            _, right_beacon_y = self.world_to_screen(right_beacon_world_x, 1)
+
+            # Draw beacons with glow effect
+            for beacon_x, beacon_y in [(left_beacon_x, left_beacon_y),
+                                       (right_beacon_x, right_beacon_y)]:
+                # Outer glow (largest)
+                glow_surf = pygame.Surface((30, 30), pygame.SRCALPHA)
+                pygame.draw.circle(glow_surf, (*BEACON_BLUE, 30), (15, 15), 15)
+                self.screen.blit(glow_surf, (int(beacon_x - 15), int(beacon_y - 15)))
+
+                # Middle glow
+                pygame.draw.circle(self.screen, (*BEACON_BLUE, 150),
+                                 (int(beacon_x), int(beacon_y)), 8)
+                # Bright core
+                pygame.draw.circle(self.screen, BEACON_BLUE,
+                                 (int(beacon_x), int(beacon_y)), 5)
+                # Very bright center
+                pygame.draw.circle(self.screen, WHITE,
+                                 (int(beacon_x), int(beacon_y)), 2)
+
     def render(self, action=0):
         self.screen.fill(BLACK)
 
-        # 1. Stars (Static background decoration)
-        for i in range(50):
-            sx = (i * 137) % SCREEN_WIDTH
-            sy = (i * 93) % SCREEN_HEIGHT
-            self.screen.set_at((sx, sy), WHITE)
+        # 1. Earth in the background
+        self.draw_earth()
 
-        # 2. Moon Surface
+        # 2. Stars (Static background decoration)
+        rng = np.random.default_rng(12345) # Consistent stars across frames
+        for i in range(150):
+            rng.uniform()
+            sx = int(rng.uniform() * SCREEN_WIDTH)
+            sy = int(rng.uniform() * SCREEN_HEIGHT * 0.80)  # Only in upper 80%
+            brightness = int(150 + rng.uniform() * 105)
+            size = 1 if rng.uniform() > 0.7 else 0
+            if size == 0:
+                self.screen.set_at((sx, sy), (brightness, brightness, brightness))
+            else:
+                pygame.draw.circle(self.screen, (brightness, brightness, brightness), (sx, sy), 1)
+
+        # 3. Moon Surface
+        # Add depth beyond landing pad
+        ground_px = int(SCREEN_HEIGHT - GROUND_Y - 50)
+        pygame.draw.rect(self.screen, MOON_LIGHT_GREY, (0, ground_px, SCREEN_WIDTH, SCREEN_HEIGHT - ground_px))
         ground_px = int(SCREEN_HEIGHT - GROUND_Y)
-        pygame.draw.rect(self.screen, GREY, (0, ground_px, SCREEN_WIDTH, SCREEN_HEIGHT - ground_px))
+        pygame.draw.rect(self.screen, MOON_LIGHT_GREY, (0, ground_px, SCREEN_WIDTH, SCREEN_HEIGHT - ground_px))
 
-        # 3. Landing Pad (Target)
-        pad_w_px = PAD_WIDTH * SCALE
-        pad_left, _ = self.world_to_screen(-PAD_WIDTH / 2, 0)
-        pygame.draw.rect(self.screen, DARK_GREY, (pad_left, ground_px, pad_w_px, 10))
-        # Landing marker
-        pygame.draw.circle(self.screen, WHITE, (int(SCREEN_WIDTH / 2), ground_px + 5), 5)
+        # 4. Draw terrain features (craters, boulders, rocks)
+        self.draw_terrain_features(ground_px)
 
-        # 4. Trajectory Trace
+        # 5. Landing Pad (Target)
+        self.draw_landing_pad()
+
+        # 6. Draw blinking beacons
+        self.draw_beacons(ground_px)
+
+        # 7. Draw astronaut and flag
+        self.screen.blit(ASTRONAUT, (325, SCREEN_HEIGHT - 95))
+        self.screen.blit(AMERICAN_FLAG, (377, SCREEN_HEIGHT - 95))
+        pygame.draw.rect(self.screen, WHITE, (376, SCREEN_HEIGHT - 95, 1, 30))
+
+        # 8. Trajectory Trace
         if len(self.env.trace) > 1:
             pts = [self.world_to_screen(px, py) for px, py in self.env.trace]
-            pygame.draw.lines(self.screen, BLUE, False, pts, 1)
+            # Draw with gradient effect (older = more transparent)
+            for i in range(1, len(pts)):
+                alpha = int(100 + (i / len(pts)) * 155)
+                color = (*BLUE[:2], min(255, BLUE[2] + 50))
+                pygame.draw.line(self.screen, color, pts[i-1], pts[i], 1)
 
-        # 5. Draw Lander (LEM Style)
-        # We draw to a surface then rotate
-        # LEM Dimensions scaled
+        # 9. Draw Lander (LEM Style)
         w = LANDER_WIDTH * SCALE
         h = LANDER_HEIGHT * SCALE
 
-        # Bigger surface to accommodate rotation and legs
         surf_size = int(max(w, h) * 3)
         lander_surf = pygame.Surface((surf_size, surf_size), pygame.SRCALPHA)
         cx, cy = surf_size // 2, surf_size // 2
 
         # -- DESCENT STAGE (Gold Octagon-ish) --
-        # Main body
         pygame.draw.rect(lander_surf, GOLD, (cx - w / 2, cy, w, h / 1.5))
-        # Legs (4 legs, simplified to 2 striding)
-        pygame.draw.line(lander_surf, GOLD, (cx - w / 2, cy + h / 2), (cx - w / 2 - 10, cy + h), 3)  # Left Leg
-        pygame.draw.line(lander_surf, GOLD, (cx + w / 2, cy + h / 2), (cx + w / 2 + 10, cy + h), 3)  # Right Leg
+        lander_surf.blit(NASA_LOGO, (cx - w / 2 + 15, cy + 1))
+        # Legs
+        pygame.draw.line(lander_surf, GOLD, (cx - w / 2, cy + h / 2), (cx - w / 2 - 10, cy + h), 3)
+        pygame.draw.line(lander_surf, GOLD, (cx + w / 2, cy + h / 2), (cx + w / 2 + 10, cy + h), 3)
         # Footpads
-        pygame.draw.circle(lander_surf, GREY, (int(cx - w / 2 - 10), int(cy + h)), 4)
-        pygame.draw.circle(lander_surf, GREY, (int(cx + w / 2 + 10), int(cy + h)), 4)
+        pygame.draw.circle(lander_surf, GREY, (int(cx - w / 2 - 10), int(cy + h)), 5)
+        pygame.draw.circle(lander_surf, GREY, (int(cx + w / 2 + 10), int(cy + h)), 5)
 
         # -- ASCENT STAGE (Grey/Black Top) --
-        pygame.draw.rect(lander_surf, DARK_GREY, (cx - w / 2.2, cy - h / 2, w / 1.1, h / 2))
-        pygame.draw.polygon(lander_surf, BLACK, [(cx - w / 2.2, cy - h / 2), (cx, cy - h), (cx + w / 2.2, cy - h / 2)])
+        pygame.draw.rect(lander_surf, MOON_DARK_GREY, (cx - w / 2.2, cy - h / 2, w / 1.1, h / 2))
+        pygame.draw.polygon(lander_surf, GREY, [(cx - w / 2.2, cy - h / 2), (cx, cy - h), (cx + w / 2.2, cy - h / 2)])
 
         # -- FLAMES --
         if self.env.fuel > 0:
             if action == 1:  # Main Engine
-                pygame.draw.polygon(lander_surf, ORANGE,
-                                    [(cx - w / 3, cy + h / 1.5), (cx + w / 3, cy + h / 1.5), (cx, cy + h * 1.5)])
-            if action == 2:  # Right RCS
-                pygame.draw.circle(lander_surf, WHITE, (int(cx - w / 2), int(cy - h / 4)), 3)
-            if action == 3:  # Left RCS
-                pygame.draw.circle(lander_surf, WHITE, (int(cx + w / 2), int(cy - h / 4)), 3)
+                flame_pts = [(cx - w / 3, cy + h / 1.5),
+                            (cx + w / 3, cy + h / 1.5),
+                            (cx, cy + h * 1.5)]
+                pygame.draw.polygon(lander_surf, ORANGE, flame_pts)
+                pygame.draw.polygon(lander_surf, RED,
+                                  [(cx - w / 4, cy + h / 1.5),
+                                   (cx + w / 4, cy + h / 1.5),
+                                   (cx, cy + h * 1.3)])
+            if action == 2:  # Left RCS
+                pygame.draw.circle(lander_surf, ORANGE, (int(cx + w / 2), int(cy - h / 4)), 4)
+                pygame.draw.circle(lander_surf, WHITE, (int(cx + w / 2), int(cy - h / 4)), 2)
+            if action == 3:  # Right RCS
+                pygame.draw.circle(lander_surf, ORANGE, (int(cx - w / 2), int(cy - h / 4)), 4)
+                pygame.draw.circle(lander_surf, WHITE, (int(cx - w / 2), int(cy - h / 4)), 2)
 
         # Rotate and Blit
         rot_surf = pygame.transform.rotate(lander_surf, math.degrees(self.env.theta))
@@ -544,7 +797,7 @@ class Renderer:
         rect.center = self.world_to_screen(self.env.x, self.env.y)
         self.screen.blit(rot_surf, rect)
 
-        # 6. HUD / Telemetry
+        # 10. HUD / Telemetry
         telemetry = [
             f"ALTITUDE: {self.env.y:.1f} m",
             f"H-SPEED:  {self.env.vx:.1f} m/s",
@@ -557,16 +810,22 @@ class Renderer:
 
         for i, line in enumerate(telemetry):
             color = WHITE
-            if "FUEL" in line and self.env.fuel < 50: color = RED
+            if "FUEL" in line and self.env.fuel < 50:
+                color = RED
+            if "V-SPEED" in line and abs(self.env.vy) > 2.5:
+                color = RED
             txt = self.font.render(line, True, color)
             self.screen.blit(txt, (10, 10 + i * 20))
 
+        # 11. Status Messages
         if self.env.landed:
             s = pygame.Surface((SCREEN_WIDTH, 60), pygame.SRCALPHA)
             s.fill((0, 255, 0, 100))
             self.screen.blit(s, (0, SCREEN_HEIGHT / 2 - 30))
-            msg = self.font.render("TOUCHDOWN CONFIRMED - R to Reset", True, WHITE)
-            self.screen.blit(msg, (SCREEN_WIDTH / 2 - 150, SCREEN_HEIGHT / 2 - 10))
+            msg_text = "TOUCHDOWN CONFIRMED - R to Reset"
+            msg = self.font.render(msg_text, True, WHITE)
+            msg_rect = msg.get_rect(center=(SCREEN_WIDTH / 2, SCREEN_HEIGHT / 2 - 10))
+            self.screen.blit(msg, msg_rect)
 
         if self.env.crashed or self.env.max_step_exceeded:
             s = pygame.Surface((SCREEN_WIDTH, 60), pygame.SRCALPHA)
@@ -631,19 +890,48 @@ class Renderer:
             self.episode_count += 1
 
 def main():
-    # env = LunarLanderEnv()
-    env = SimpleLunarLanderEnv()
+    """
+    Main function demonstrating the Lunar Lander environment variations.
+    """
+    # Example 1: Standard environment with flat terrain
+    env = LunarLanderEnv()
+
+    # Example 2: Environment with offset landing pad
+    # env = LunarLanderEnv(pad_x_offset=15.0)  # Pad 15m to the right
+
+    # Example 3: Simplified environment with terrain features
+    # env = SimpleLunarLanderEnv()
+
+    # Example 4: x-offset Environment with terrain features
+    # env = LLE_XOffset()
+
+    # Example 5: Initial velocity Environment with terrain features
+    # env = LLE_InitialVelocity()
 
     # Initialize renderer with recording options
     renderer = Renderer(
         env,
-        save_video=True,  # Set to True to save as MP4
+        save_video=False,  # Set to True to save as MP4
         save_gif=False,    # Set to True to save as GIF
         output_dir="lunar_recordings"
     )
 
     running = True
     episode_done = False
+
+    print("=" * 60)
+    print("APOLLO LUNAR DESCENT SIMULATION")
+    print("=" * 60)
+    print("Controls:")
+    print("  UP ARROW    - Main Engine (Thrust)")
+    print("  LEFT ARROW  - Left RCS (Rotate Clockwise)")
+    print("  RIGHT ARROW - Right RCS (Rotate Counter-Clockwise)")
+    print("  R           - Reset Environment")
+    print("  S           - Save Recording (if recording enabled)")
+    print("  Q / ESC     - Quit")
+    print("=" * 60)
+    print(f"Landing Pad Offset: {env.pad_x_offset:.1f} meters")
+    print("=" * 60)
 
     while running:
         renderer.clock.tick(FPS)
