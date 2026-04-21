@@ -60,6 +60,10 @@ class QLearningAgent(SARSAAgent):
                              debug=debug,
                              logging_rate=logging_rate)
 
+class QLearningAgent10Step(QLearningAgent):
+    def __init__(self, **kwargs):
+        super().__init__(n_step=10, **kwargs)
+
 if __name__ == "__main__":
     # Environment
     num_actions = 4  # Main engine + left/right thrusters
@@ -69,7 +73,11 @@ if __name__ == "__main__":
     lunar_env = LunarLanderEnv(debug=True, max_number_of_seconds=25)
 
     # Agent
-    qlearning_agent = QLearningAgent(n_actions=num_actions, n_step=10, epsilon_decay=0.9995)  #.load()
+    qlearning_agent = QLearningAgent(n_actions=num_actions)  #.load()
+    print(f"Number of discrete states: {qlearning_agent.get_number_of_states():,}")
+    print(f"Number of winning states: {qlearning_agent.get_number_of_winning_states():,}")
+    for bin, states in qlearning_agent.get_states().items():
+        print(bin, [f"{s:.3f}" for s in states])
 
     # Train the agent and save the Q-table
     history = qlearning_agent.train(lunar_env, episodes=50000, debug=True)

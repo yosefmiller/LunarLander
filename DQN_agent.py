@@ -117,7 +117,7 @@ class DQNAgent(BaseAgent):
     target network updates, and epsilon-greedy action selection with optional decay.
     """
     def __init__(self,
-                num_state_features=7,  # Use all features including fuel!
+                num_state_features=8,  # Use all features including fuel!
                 num_actions=4,
                 alpha=1e-4,
                 gamma=0.99,
@@ -436,7 +436,7 @@ class DQNAgent(BaseAgent):
         """
         Runs the trained agent and renders the environment.
         """
-        renderer = Renderer(env, save_gif)
+        renderer = Renderer(env, self.name, save_gif)
 
         for ep in range(episodes):
             obs = env.reset().to_array()
@@ -467,6 +467,10 @@ class DQNAgent(BaseAgent):
             pygame.time.wait(1000) # Pause for a second before the next episode
 
         pygame.quit()
+
+class DoubleDQNAgent(DQNAgent):
+    def __init__(self, **kwargs):
+        super().__init__(use_double_dqn=True, **kwargs)
 
 # Checkpoints are saved synchronously with torch.save to keep the implementation simple.
 

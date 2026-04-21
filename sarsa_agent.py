@@ -14,7 +14,7 @@ from lunar_lander_env import (SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelo
 from base_agent import BaseAgent
 
 class SARSAAgent(BaseAgent):
-    def __init__(self, n_actions=4, n_step=1, alpha=0.1, gamma=0.99, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.05):
+    def __init__(self, n_actions=4, n_step=1, alpha=0.2, gamma=0.995, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.1):
         """
         SARSA Agent for the Lunar Lander environment.
 
@@ -72,11 +72,15 @@ class SARSAAgent(BaseAgent):
         #             ])
         # ang_vel_bins = np.array([-1.0, -0.5, -0.2, -0.05, 0.05, 0.2, 0.5, 1.0])
 
-        x_bins = [-1.05, -0.7, -0.35, 0.0, 0.35, 0.7, 1.05]
-        y_bins = [0.387, 0.565, 0.677, 0.754, 0.801, 0.835, 0.902]
-        vx_bins = [-1.485, -0.993, -0.502, -0.011, 0.48, 0.971, 1.462]
-        vy_bins = [-0.633, -0.364, -0.256, -0.192, -0.138, -0.096, -0.04]
-        angle_bins = [-1.329, -0.703, -0.36, -0.094, 0.083, 0.324, 0.983]
+        x_bins = list(np.concatenate([
+            -np.logspace(0, -0.8, base=10.0, num=5),
+            [0.0],
+            np.logspace(-0.8, 0, base=10.0, num=5),
+        ]))
+        y_bins = np.logspace(1, 3.4, base=3.0, num=6) / 50.0
+        vx_bins = [-1.485, -0.993, -0.502, -0.011, 0.011, 0.502, 0.993, 1.485]
+        vy_bins = [-0.633, -0.364, -0.256, -0.192, -0.138, -0.096, -0.04, 0.04, 0.096]
+        angle_bins = [-1.329, -0.703, -0.36, -0.094, 0.094, 0.36, 0.703, 1.329]
         ang_vel_bins = [-0.327, -0.192, -0.096, -0.038, 0.038, 0.115, 0.25]
 
         self.bins = {
@@ -118,15 +122,15 @@ class SARSAAgent(BaseAgent):
         max_vy = 2.5 / 10
         max_vx = 2.0 / 10
         max_theta = 0.5
-        max_y = 3.0
-        max_x = PAD_WIDTH / 2
+        max_y = 3.0 / 50
+        max_x = PAD_WIDTH / 2 / 50
 
         # Calculate how many bins fall within the "safe" landing criteria
-        safe_x_bins = sum(1 for b in self.bins['x'] if abs(b) < max_x)
-        safe_y_bins = sum(1 for b in self.bins['y'] if b < max_y)
-        safe_vx_bins = sum(1 for b in self.bins['vx'] if abs(b) < max_vx)
-        safe_vy_bins = sum(1 for b in self.bins['vy'] if abs(b) < max_vy)
-        safe_theta_bins = sum(1 for b in self.bins['theta'] if abs(b) < max_theta)
+        safe_x_bins = sum(1 for b in self.bins['x'] if abs(b) <= max_x)
+        safe_y_bins = sum(1 for b in self.bins['y'] if b <= max_y)
+        safe_vx_bins = sum(1 for b in self.bins['vx'] if abs(b) <= max_vx)
+        safe_vy_bins = sum(1 for b in self.bins['vy'] if abs(b) <= max_vy)
+        safe_theta_bins = sum(1 for b in self.bins['theta'] if abs(b) <= max_theta)
         safe_omega_bins = len(self.bins['omega'])
 
         # The number of winning states is the product of the safe bins for each variable
@@ -225,11 +229,18 @@ class SARSAAgent(BaseAgent):
                 if len(trajectory) == self.n_step or done:
                     # Update using n-step
                     self.update(list(trajectory), next_state_tuple, next_action, done)
+                    trajectory.popleft()  # Remove the oldest experience to make room for new ones
 
                 # Progress to next step
                 state_tuple = next_state_tuple
                 action = next_action
                 total_reward += reward
+
+            # Flush remaining transitions at episode end
+            while trajectory:
+                # noinspection PyUnboundLocalVariable
+                self.update(list(trajectory), next_state_tuple, next_action, done=True)
+                trajectory.popleft()
 
             self.decay_epsilon()
 
@@ -290,7 +301,7 @@ class SARSAAgent(BaseAgent):
 
     def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="SARSA_Agent_checkpoints/agent1", show_bins=False):
         """Runs the trained agent and renders the environment."""
-        renderer = Renderer(env, save_gif)
+        renderer = Renderer(env, self.name, save_gif)
         
         for ep in range(episodes):
             state = env.reset()
@@ -324,17 +335,22 @@ class SARSAAgent(BaseAgent):
             
         pygame.quit()
 
+class SARSAAgent10Step(SARSAAgent):
+    def __init__(self, **kwargs):
+        super().__init__(n_step=10, **kwargs)
+
 if __name__ == "__main__":
     # Environment
     num_actions = 4
     # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
     # lunar_env = LLE_XOffset(debug=True)
     # lunar_env = LLE_InitialVelocity(debug=True)
-    lunar_env = LunarLanderEnv(debug=True, max_number_of_seconds=25)
+    lunar_env = LunarLanderEnv(debug=False, max_number_of_seconds=25)
     # lunar_env = RandomLunarLander(debug=True)
+    print(f"Initial Reward Potential: {lunar_env._calculate_shaping():.2f}")
 
     # Agent
-    sarsa_agent = SARSAAgent(n_actions=num_actions, n_step=1, epsilon_decay=0.9995)  #.load()
+    sarsa_agent = SARSAAgent(n_actions=num_actions, n_step=10)  #.load()
     print(f"Number of discrete states: {sarsa_agent.get_number_of_states():,}")
     print(f"Number of winning states: {sarsa_agent.get_number_of_winning_states():,}")
     for bin, states in sarsa_agent.get_states().items():
@@ -348,4 +364,4 @@ if __name__ == "__main__":
     sarsa_agent.evaluate(lunar_env, episodes=1000, debug=True)
 
     # Show a few episodes of the trained agent
-    sarsa_agent.show_progress(lunar_env, episodes=5)
+    sarsa_agent.show_progress(lunar_env, episodes=5, show_bins=True)

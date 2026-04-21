@@ -10,9 +10,12 @@ import os
 # Define the training configuration for each agent type
 training_config = {
     "SARSA": {"num_tr_episodes": 50000},
+    "SARSA_10": {"num_tr_episodes": 50000},
     "QLearning": {"num_tr_episodes": 50000},
+    "QLearning_10": {"num_tr_episodes": 50000},
     "SARSA_Lambda": {"num_tr_episodes": 25000},
-    "DQN": {"num_tr_episodes": 5000}
+    "DQN": {"num_tr_episodes": 5000},
+    "DoubleDQN": {"num_tr_episodes": 5000}
 }
 
 def train_and_collect_metrics(env,
@@ -39,9 +42,12 @@ def train_and_collect_metrics(env,
     env = env if agent_type == 'DQN' else env()
 
     if agent_type == "SARSA": agent_constructor = sarsa_agent.SARSAAgent
+    elif agent_type == "SARSA_10": agent_constructor = sarsa_agent.SARSAAgent10Step
     elif agent_type == "QLearning": agent_constructor = qlearning_agent.QLearningAgent
+    elif agent_type == "QLearning_10": agent_constructor = qlearning_agent.QLearningAgent10Step
     elif agent_type == "SARSA_Lambda": agent_constructor = sarsa_lambda_agent.SARSALambdaAgent
     elif agent_type == "DQN": agent_constructor = DQN_agent.DQNAgent
+    elif agent_type == "DoubleDQN": agent_constructor = DQN_agent.DoubleDQNAgent
     else: raise TypeError(f"No constructor found for agent type '{agent_type}'")
 
     # Train the agents

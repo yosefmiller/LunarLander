@@ -95,6 +95,7 @@ class BaseAgent(ABC):
     def _calculate_stats(episode_history: List[EpisodeResult]) -> List[str]:
         avg_reward = np.mean([h['reward'] for h in episode_history])
         avg_duration = np.mean([h['steps'] for h in episode_history])
+        avg_spent = np.mean([h['spent'] for h in episode_history])
         crashed = sum(h['crashed'] for h in episode_history)
         landed = sum(h['landed'] for h in episode_history)
         timeout = sum(h['timeout'] for h in episode_history)
@@ -104,6 +105,7 @@ class BaseAgent(ABC):
         return [
             f"Avg Reward: {avg_reward:.2f}",
             f"Steps: {avg_duration:.1f}",
+            f"Spent: {avg_spent:.2f} kg",
             f"Landed: {landed}",
             f"Crashed: {crashed}",
             f"Timeout: {timeout}",

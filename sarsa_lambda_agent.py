@@ -295,7 +295,7 @@ class SARSALambdaAgent(BaseAgent):
         :param agent: The trained agent to be evaluated.
         :param num_episodes: The number of episodes to run for evaluation.
         """
-        renderer = Renderer(env)
+        renderer = Renderer(env, self.name)
 
         for ep in range(episodes):
             obs = env.reset()

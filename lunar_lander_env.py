@@ -94,6 +94,7 @@ class LunarLanderState:
 class EpisodeResult(TypedDict):
     reward: float|None  # Filled after rewards are accumulated at the end of the episode
     steps: int
+    spent: float
     landed: bool
     timeout: bool
     crashed: bool
@@ -114,6 +115,7 @@ class LunarLanderEnv:
     number_of_steps: int
     timeout: bool
     trace: list
+    record_trace: bool
     prev_action: int
     prev_shaping: float|None
     moment_of_inertia: float
@@ -123,8 +125,6 @@ class LunarLanderEnv:
         self.max_number_of_seconds = float(max_number_of_seconds)
         self.debug=debug
         self.reset()
-        if debug:
-            print(f"Initial Reward Potential: {self._calculate_shaping():.2f}")
 
     def reset(self) -> LunarLanderState:
         self._init_state()
@@ -139,6 +139,7 @@ class LunarLanderEnv:
         self.crash_reason = CrashReason(0)  # Store reason for display
         self.timeout = False
         self.trace = []
+        self.record_trace = False
 
         self.prev_shaping = None
 
@@ -168,9 +169,8 @@ class LunarLanderEnv:
 
     def _calculate_shaping(self) -> float:
         """
-        Calculates a potential-based shaping value.
-        Higher (closer to 0) is better.
-        The shaping stays bounded and well below the landing bonus.
+        Goal-oriented potential: measures "distance" to the desired final state.
+        Higher (closer to 0) = closer to: on pad, at rest, upright.
         """
         # Scale state to roughly 0.0 to 1.0 range
         dist     = np.sqrt(self.x ** 2 + (self.y-3) ** 2) / 75.0  # 1 unit = 75m
@@ -186,18 +186,24 @@ class LunarLanderEnv:
         # This sum must be less than the landing bonus to ensure the agent will not intentionally crash for shaping rewards.
         return (- 20.0 * dist
                 - 10.0 * velocity
-                - 5.0 * (tilt > 90) * (tilt - 90)
+                # - 3.0 * (tilt > 1) * (tilt - 1)
+                # - 3.0 * (omega > 0.5)
         )
 
     def _calculate_reward(self, action: int) -> float:
         """
-        Calculates the reward for the current transition.
-        Assumes the physics step has completed and termination flags
-        (landed, crashed, timeout) are already updated.
+        Calculate the reward for the current transition.
+
+        Reward structure:
+        1. Small time penalty (encourages faster landing)
+        2. Energy-based shaping (dense feedback for progress)
+        3. Control penalties (mild, to encourage fuel efficiency)
+        4. Terminal bonuses/penalties (sparse, dominant signal)
         """
+        reward = 0.0
 
         # 1. Time Penalty
-        reward = -0.0/FPS
+        # reward -= 1.0/FPS
 
         # 2. Potential-Based Shaping (Dense)
         shaping = self._calculate_shaping()
@@ -217,7 +223,7 @@ class LunarLanderEnv:
             reward += 500.0
 
             # Add bonus for landing squarely on both feet
-            if abs(self.theta) < 0.1:
+            if abs(self.theta) < 0.1:  # < ~5.7 degrees
                 reward += 20.0
 
             # Add fuel penalty
@@ -254,7 +260,15 @@ class LunarLanderEnv:
         result: dict (crash status, landing status, max step exceeded, crash reason)
         """
         if self.landed or self.crashed or self.timeout:
-            return self._get_state(), 0, True, EpisodeResult(steps=self.number_of_steps, reward=0, landed=self.landed, crashed=self.crashed, timeout=self.timeout, crash_reason=self.crash_reason)
+            return self._get_state(), 0, True, EpisodeResult(
+                steps=self.number_of_steps,
+                reward=0,
+                spent=FUEL_MASS_START - self.fuel,
+                landed=self.landed,
+                crashed=self.crashed,
+                timeout=self.timeout,
+                crash_reason=self.crash_reason
+            )
 
         #########################
         ##### APPLY THRUST ######
@@ -265,8 +279,8 @@ class LunarLanderEnv:
         force_y = self.mass * GRAVITY  # Weight
         torque = 0.0
 
-        sin_theta = np.sin(self.theta)
-        cos_theta = np.cos(self.theta)
+        sin_theta = math.sin(self.theta)
+        cos_theta = math.cos(self.theta)
 
         match action:
             case 0:  # No Action
@@ -277,7 +291,6 @@ class LunarLanderEnv:
                 force_y += cos_theta * f_thrust
                 self.fuel -= FUEL_CONSUMPTION_MAIN * DT
             case 2:  # Left RCS
-                # Standard RL simplified: "Left" action fires left thruster, pushes ship RIGHT, rotates CW
                 f_thrust = SIDE_THRUST
                 force_x += cos_theta * f_thrust
                 force_y += sin_theta * f_thrust
@@ -305,59 +318,52 @@ class LunarLanderEnv:
         self.omega += alpha * DT
         self.theta += self.omega * DT
 
-        self.trace.append((self.x, self.y))
-        if len(self.trace) > 200: self.trace.pop(0)
+        if self.record_trace:
+            self.trace.append((self.x, self.y))
+            if len(self.trace) > 200: self.trace.pop(0)
 
         ############################
         ##### TERMINAL CHECKS #####
         ############################
         done = False
 
-        # Legs: Define the LEM feet relative to center
-        half_w = LANDER_WIDTH / 2.0 + 1.0  # Gear extends past body
-        half_h = LANDER_HEIGHT / 2.0 + 1.0  # Gear extends below body
+        half_w = LANDER_WIDTH / 2.0 + 1.0
+        half_h = LANDER_HEIGHT / 2.0 + 1.0
 
-        def get_world_point(lx, ly):
-            c = np.cos(self.theta)
-            s = np.sin(self.theta)
-            return self.x + lx * c - ly * s, self.y + lx * s + ly * c
+        # Only check ground contact when we're close (huge speedup)
+        if self.y > 5.0:
+            # Too high to touch ground, skip expensive foot calculations
+            pass
+        else:
+            # Compute foot positions (reuse sin/cos from thrust calculation)
+            # Left foot: relative position (-half_w, -half_h)
+            # left_foot_x = self.x + (-half_w) * cos_theta - (-half_h) * sin_theta
+            left_foot_y = self.y + (-half_w) * sin_theta + (-half_h) * cos_theta
 
-        # Check Left and Right foot
-        left_foot = get_world_point(-half_w, -half_h)
-        right_foot = get_world_point(half_w, -half_h)
+            # Right foot: relative position (half_w, -half_h)
+            # right_foot_x = self.x + half_w * cos_theta - (-half_h) * sin_theta
+            right_foot_y = self.y + half_w * sin_theta + (-half_h) * cos_theta
 
-        # Ground Plane (y=0)
-        if left_foot[1] <= 0 or right_foot[1] <= 0:
-            done = True
+            # Ground Plane (y=0)
+            if left_foot_y <= 0 or right_foot_y <= 0:
+                done = True
 
-            # Landing Criteria (Apollo style: very gentle)
-            # Horizontal speed must be near zero
-            # Vertical speed must be < 2.5 m/s
-            # Angle must be level
-            # Must be within PAD radius
+                # Landing Criteria
+                vel_safe = abs(self.vy) < 2.5 and abs(self.vx) < 2.0
+                angle_safe = abs(self.theta) < 0.5
+                on_pad = abs(self.x) < (PAD_WIDTH / 2.0)
 
-            vel_safe = abs(self.vy) < 2.5 and abs(self.vx) < 2.0
-            angle_safe = abs(self.theta) < 0.5
-            on_pad = abs(self.x) < (PAD_WIDTH / 2.0)
-
-            # Physics adjustment to sit on ground
-            self.y -= min(left_foot[1], right_foot[1])
-            if vel_safe and angle_safe and on_pad:
-                self.landed = True
-                if self.debug:
-                    print(f"EAGLE HAS LANDED. Fuel Spent: {FUEL_MASS_START - self.fuel:.1f} kg")
-            else:
-                self.crashed = True
-                if not vel_safe: self.crash_reason |= CrashReason.TOO_FAST
-                if not angle_safe: self.crash_reason |= CrashReason.TILTED
-                if not on_pad: self.crash_reason |= CrashReason.MISSED_LZ
-                # print(f"ABORT/CRASH: {self.crash_reason}")
-
-        # Unsafe descent conditions
-        # if abs(self.theta) > (math.pi / 2.0):
-        #     done = True
-        #     self.crashed = True
-        #     self.crash_reason |= CrashReason.TILTED
+                # Physics adjustment to sit on ground
+                self.y -= min(left_foot_y, right_foot_y)
+                if vel_safe and angle_safe and on_pad:
+                    self.landed = True
+                    if self.debug:
+                        print(f"EAGLE HAS LANDED. Fuel Spent: {FUEL_MASS_START - self.fuel:.1f} kg")
+                else:
+                    self.crashed = True
+                    if not vel_safe: self.crash_reason |= CrashReason.TOO_FAST
+                    if not angle_safe: self.crash_reason |= CrashReason.TILTED
+                    if not on_pad: self.crash_reason |= CrashReason.MISSED_LZ
 
         # Out of bounds
         if abs(self.x) > (SCREEN_WIDTH / SCALE) / 2 + 20 or self.y > (SCREEN_HEIGHT / SCALE) + 20:
@@ -378,6 +384,7 @@ class LunarLanderEnv:
 
         result = EpisodeResult(
             reward=None,
+            spent=FUEL_MASS_START - self.fuel,
             crashed=self.crashed,
             landed=self.landed,
             timeout=self.timeout,
@@ -541,13 +548,14 @@ class VectorizedEnv:
         return obs, rewards, dones, infos
 
 class Renderer:
-    def __init__(self, env, save_gif=False):
+    def __init__(self, env: LunarLanderEnv, agent_name='Agent', save_gif=False):
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-        pygame.display.set_caption("Apollo Lunar Descent Simulation")
+        pygame.display.set_caption(f"Apollo Lunar Descent Simulation - {agent_name}")
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont("monospace", 16)
         self.env = env
+        self.env.record_trace = True
         self.should_save_gif = save_gif
         self.frames = []
 
