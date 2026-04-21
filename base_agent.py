@@ -75,13 +75,15 @@ class BaseAgent(ABC):
         pass
 
     @abstractmethod
-    def show_progress(self, env, episodes: int) -> None:
+    def show_progress(self, env, episodes: int, save_gif: bool, gif_path: str) -> None:
         """
         Visualize agent performance using pygame.
 
         Args:
             env: Environment instance
             episodes: Number of episodes to visualize
+            save_gif: Whether to save a GIF of the agent
+            gif_path: Path to save the GIF of the agent
         """
         pass
 

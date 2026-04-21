@@ -8,7 +8,7 @@ import pygame
 import os
 import time
 from tqdm import tqdm
-from utils import plot_learning_curve
+from utils import plot_learning_curve, save_as_gif, plot_outcomes
 from lunar_lander_env import LunarLanderEnv, VectorizedEnv, Renderer, EpisodeResult, SimpleLunarLanderEnv
 from base_agent import BaseAgent
 
@@ -170,7 +170,7 @@ class DQNAgent(BaseAgent):
         return "DoubleDQN" if self.use_double_dqn else "DQN"
 
     def act(self, state, evaluate=False) -> int:
-        if not eval and np.random.rand() < self.epsilon:
+        if not evaluate and np.random.rand() < self.epsilon:
             return int(np.random.randint(0, self.num_actions))
         else:
             with torch.no_grad():
@@ -277,6 +277,7 @@ class DQNAgent(BaseAgent):
         # Keep max_steps for API compatibility and rough progress/checkpoint planning.
         estimated_training_steps = max(1, episodes * max_steps // max(1, num_parallel_envs))
 
+        # Save Q network weights periodically
         os.makedirs(chkpt_path, exist_ok=True)
         ckpt_episode_interval = max(1, episodes // 3)
         next_ckpt_episode = ckpt_episode_interval
@@ -344,8 +345,8 @@ class DQNAgent(BaseAgent):
             # Periodic optimization
             if (self.steps_done + 1) % self.update_freq == 0:
                 self.optimize_q_network()
-                interval_loss_sum += getattr(self, 'running_loss', 0.0)
                 interval_loss_count += 1
+                interval_loss_sum += getattr(self, 'running_loss', 0.0)
                 self.running_loss = 0.0
 
             # Target network update
@@ -432,11 +433,11 @@ class DQNAgent(BaseAgent):
 
         return episode_history
 
-    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="dqn_agent_progress.gif"):
+    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="dqn_agent_recordings"):
         """
         Runs the trained agent and renders the environment.
         """
-        renderer = Renderer(env, self.name, save_gif)
+        renderer = Renderer(env, self.name, save_gif, output_dir=gif_path)
 
         for ep in range(episodes):
             obs = env.reset().to_array()
@@ -455,14 +456,14 @@ class DQNAgent(BaseAgent):
                 # Greedy action selection (epsilon=0)
                 action = self.act(obs, evaluate=True)
                 
-                next_obs, reward, done, _ = env.step(action)
+                next_obs, reward, done, result = env.step(action)
                 obs = next_obs.to_array()
                 total_reward += reward
 
                 renderer.render(action)
-                
+
             if save_gif:
-                renderer.save_gif(gif_path)
+                save_as_gif(renderer=renderer, landing_result=result)
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
 
@@ -472,11 +473,8 @@ class DoubleDQNAgent(DQNAgent):
     def __init__(self, **kwargs):
         super().__init__(use_double_dqn=True, **kwargs)
 
-# Checkpoints are saved synchronously with torch.save to keep the implementation simple.
-
 if __name__ == "__main__":
     # Environment
-    # lunar_env = SimpleLunarLanderEnv(debug=False)
     lunar_env = LunarLanderEnv(debug=False)
 
     # Agent
@@ -486,6 +484,7 @@ if __name__ == "__main__":
     history = agent.train(LunarLanderEnv, episodes=5000, debug=True, logging_rate=100)
     # noinspection PyTypeChecker
     plot_learning_curve([h['reward'] for h in history], agent_type=agent.name)
+    plot_outcomes(history, agent_type="DQN")
 
     # Evaluate and render the trained agent
     agent.evaluate(lunar_env, episodes=100)

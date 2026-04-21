@@ -58,7 +58,6 @@ def train_and_collect_metrics(env,
         history_tr = agent.train(env=env,
                            episodes=num_tr_episodes,
                            chkpt_path=os.path.join(training_results_path, f"agent{i}"))
-        # all_returns[i] = G_tr
         all_returns.append([ep["reward"] for ep in history_tr])
 
     # DQN trains via steps, so # of episodes can vary across training instances
@@ -71,12 +70,12 @@ def train_and_collect_metrics(env,
     print(f"\nAverage agent return during training: {np.mean(avg_G_i_tr)}, standard deviation: {np.std(avg_G_i_tr)}")
             
     # Save the returns to a CSV file
-    filename = os.path.join(training_results_path, f"{agent_type}_agent_training_returns.csv")
+    filename = os.path.join(training_results_path, "training_returns.csv")
     np.savetxt(filename, all_returns, delimiter=",")
 
-def train_all_agents(num_agents:int = 20):
+def train_all_agents(num_agents:int = 20, outdir='training_results'):
     """ 
-    Train each agent types for several intances on the Lundar Lander environment. 
+    Train each agent types for several instances on the Lundar Lander environment.
     
     Args:
         num_agents (int): The number of agents to train for each agent type.
@@ -89,7 +88,8 @@ def train_all_agents(num_agents:int = 20):
         train_and_collect_metrics(env=LunarLanderEnv,
                                   agent_type=agent_type,
                                   num_agents=num_agents,
-                                  num_tr_episodes=num_tr_episodes)
+                                  num_tr_episodes=num_tr_episodes,
+                                  outdir=outdir)
         print("\n" + "="*50 + "\n")
 
 

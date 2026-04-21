@@ -8,13 +8,13 @@ from typing import List, Dict, Tuple
 import numpy as np
 import pygame
 from tqdm import tqdm
-from utils import plot_learning_curve, rand_argmax
+from utils import plot_learning_curve, plot_outcomes, rand_argmax, save_as_gif
 from lunar_lander_env import (SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, RandomLunarLander,
-    Renderer, EpisodeResult, LunarLanderState,  PAD_WIDTH)
+    Renderer, EpisodeResult, LunarLanderState, PAD_WIDTH)
 from base_agent import BaseAgent
 
 class SARSAAgent(BaseAgent):
-    def __init__(self, n_actions=4, n_step=1, alpha=0.2, gamma=0.995, epsilon=1.0, epsilon_decay=0.9995, epsilon_min=0.1):
+    def __init__(self, n_actions=4, n_step=1, alpha=0.2, gamma=0.995, epsilon=1.0, epsilon_decay=0.9997, epsilon_min=0.1):
         """
         SARSA Agent for the Lunar Lander environment.
 
@@ -36,7 +36,7 @@ class SARSAAgent(BaseAgent):
 
         self.n_actions = n_actions
         self.n_step = n_step
-        
+
         # Hyperparameters
         self.alpha = alpha                  # Learning rate
         self.gamma = gamma                  # Discount factor
@@ -73,9 +73,9 @@ class SARSAAgent(BaseAgent):
         # ang_vel_bins = np.array([-1.0, -0.5, -0.2, -0.05, 0.05, 0.2, 0.5, 1.0])
 
         x_bins = list(np.concatenate([
-            -np.logspace(0, -0.8, base=10.0, num=5),
+            -np.logspace(0, -0.9, base=10.0, num=5),
             [0.0],
-            np.logspace(-0.8, 0, base=10.0, num=5),
+            np.logspace(-0.9, 0, base=10.0, num=5),
         ]))
         y_bins = np.logspace(1, 3.4, base=3.0, num=6) / 50.0
         vx_bins = [-1.485, -0.993, -0.502, -0.011, 0.011, 0.502, 0.993, 1.485]
@@ -199,7 +199,7 @@ class SARSAAgent(BaseAgent):
 
         # Save Q table periodically
         os.makedirs(chkpt_path, exist_ok=True)
-        ckpt_interval = max(1, episodes // 5)
+        ckpt_interval = max(1, episodes // 3)
 
         if debug:
             print(f"Training for {episodes} episodes...")
@@ -257,7 +257,7 @@ class SARSAAgent(BaseAgent):
                     f"Q-Table Coverage: {coverage:.2f}%",
                     *self._calculate_stats(episode_history[-logging_rate:])
                 ]
-                print(f"Episode {ep+1:04d}/{episodes}: {" | ".join(stats)}")
+                print(f"Episode {ep+1:04d}/{episodes}: {' | '.join(stats)}")
 
             # Save Q table checkpoints
             if (ep + 1) % ckpt_interval == 0:
@@ -299,16 +299,16 @@ class SARSAAgent(BaseAgent):
 
         return episode_history
 
-    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="SARSA_Agent_checkpoints/agent1", show_bins=False):
+    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="sarsa_agent_recordings", show_bins=False):
         """Runs the trained agent and renders the environment."""
-        renderer = Renderer(env, self.name, save_gif)
+        renderer = Renderer(env, self.name, save_gif=save_gif, output_dir=gif_path)
         
         for ep in range(episodes):
             state = env.reset()
             state_tuple = self.discretize(state)
             done = False
             total_reward = 0.0
-            
+
             print(f"\nRendering Episode {ep + 1}...")
             
             while not done:
@@ -323,16 +323,17 @@ class SARSAAgent(BaseAgent):
                 # Greedy action selection (epsilon=0)
                 action = self.act(state_tuple, evaluate=True)
                 
-                next_state, reward, done, _ = env.step(action)
+                next_state, reward, done, result = env.step(action)
                 state_tuple = self.discretize(next_state)
                 total_reward += reward
                 
                 renderer.render(action, bins=self.bins if show_bins else None)
 
-            renderer.save_gif(f"{gif_path}/{self.name}_episode_{ep + 1:02d}.gif")
+            if save_gif:
+                save_as_gif(renderer=renderer, landing_result=result)
             print(f"Episode {ep + 1}: Total Reward: {total_reward:.1f}")
             pygame.time.wait(1000) # Pause for a second before the next episode
-            
+
         pygame.quit()
 
 class SARSAAgent10Step(SARSAAgent):
@@ -345,7 +346,7 @@ if __name__ == "__main__":
     # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
     # lunar_env = LLE_XOffset(debug=True)
     # lunar_env = LLE_InitialVelocity(debug=True)
-    lunar_env = LunarLanderEnv(debug=False, max_number_of_seconds=25)
+    lunar_env = LunarLanderEnv(debug=False, max_number_of_steps=25*60)
     # lunar_env = RandomLunarLander(debug=True)
     print(f"Initial Reward Potential: {lunar_env._calculate_shaping():.2f}")
 
@@ -359,9 +360,10 @@ if __name__ == "__main__":
     # Train the agent and save the Q-table
     history = sarsa_agent.train(lunar_env, episodes=50000, debug=True)
     plot_learning_curve([h['reward'] for h in history], agent_type="SARSA")
+    plot_outcomes(history, agent_type="SARSA")
 
     # Evaluate and render the trained agent
     sarsa_agent.evaluate(lunar_env, episodes=1000, debug=True)
 
     # Show a few episodes of the trained agent
-    sarsa_agent.show_progress(lunar_env, episodes=5, show_bins=True)
+    sarsa_agent.show_progress(lunar_env, episodes=5, show_bins=True, save_gif=True)
