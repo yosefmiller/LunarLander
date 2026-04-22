@@ -1,10 +1,9 @@
 from typing import List, Tuple
 
 from utils import plot_learning_curve, rand_argmax, save_as_gif, plot_outcomes
-from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer, EpisodeResult
+from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, EpisodeResult
 from base_agent import BaseAgent
 import random
-import pygame
 import os
 import time
 from tqdm import tqdm
@@ -292,6 +291,8 @@ class SARSALambdaAgent(BaseAgent):
         :param agent: The trained agent to be evaluated.
         :param num_episodes: The number of episodes to run for evaluation.
         """
+        import pygame
+        from renderer import Renderer
         renderer = Renderer(env, self.name, save_gif=save_gif, output_dir=gif_path)
 
         for ep in range(episodes):

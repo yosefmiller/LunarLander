@@ -4,12 +4,11 @@ from typing import List, Type
 import torch
 import torch.nn as nn
 import numpy as np
-import pygame
 import os
 import time
 from tqdm import tqdm
 from utils import plot_learning_curve, save_as_gif, plot_outcomes
-from lunar_lander_env import LunarLanderEnv, VectorizedEnv, Renderer, EpisodeResult, SimpleLunarLanderEnv
+from lunar_lander_env import LunarLanderEnv, VectorizedEnv, EpisodeResult, SimpleLunarLanderEnv
 from base_agent import BaseAgent
 
 class QNetwork(nn.Module):
@@ -398,9 +397,6 @@ class DQNAgent(BaseAgent):
         time_elapsed = time.time() - start
         print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
 
-        if episode_history:
-            print(" | ".join(self._calculate_stats(episode_history)))
-
         torch.save(self.q_network.state_dict(), f"{chkpt_path}/best_weights.pth")
         np.save(f"{chkpt_path}/training_history.npy", np.array(episode_history, dtype=object))
 
@@ -437,6 +433,8 @@ class DQNAgent(BaseAgent):
         """
         Runs the trained agent and renders the environment.
         """
+        import pygame
+        from renderer import Renderer
         renderer = Renderer(env, self.name, save_gif, output_dir=gif_path)
 
         for ep in range(episodes):

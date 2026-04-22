@@ -1,9 +1,7 @@
 from typing import List, Tuple
 
-import numpy as np
-
 from sarsa_agent import SARSAAgent
-from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer, EpisodeResult
+from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, EpisodeResult
 from utils import plot_learning_curve, plot_outcomes
 
 
@@ -43,7 +41,7 @@ class QLearningAgent(SARSAAgent):
         new_q = current_q + self.alpha * (G - current_q)
         self.q_table[s_update][a_update] = new_q
 
-    def load(self, path="QLearning_Agent_checkpoints/agent1/best_qtable_values.npy") -> SARSAAgent:
+    def load(self, path="QLearning_Agent_checkpoints/agent1/best_qtable_values.npy") -> 'QLearningAgent':
         return super().load(path)
 
     def train(self,

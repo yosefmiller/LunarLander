@@ -6,11 +6,10 @@ from functools import reduce
 from typing import List, Dict, Tuple
 
 import numpy as np
-import pygame
 from tqdm import tqdm
 from utils import plot_learning_curve, plot_outcomes, rand_argmax, save_as_gif
 from lunar_lander_env import (SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, RandomLunarLander,
-    Renderer, EpisodeResult, LunarLanderState, PAD_WIDTH)
+                              EpisodeResult, LunarLanderState, PAD_WIDTH)
 from base_agent import BaseAgent
 
 class SARSAAgent(BaseAgent):
@@ -181,7 +180,7 @@ class SARSAAgent(BaseAgent):
     def save(self, path):
         np.save(self.q_table, path)
 
-    def load(self, path="SARSA_Agent_checkpoints/agent1/best_qtable_values.npy") -> SARSAAgent:
+    def load(self, path="SARSA_Agent_checkpoints/agent1/best_qtable_values.npy") -> 'SARSAAgent':
         qtable = np.load(path, allow_pickle=True).item()
         self.q_table = defaultdict(lambda: np.zeros(self.n_actions), qtable)
         return self
@@ -301,6 +300,8 @@ class SARSAAgent(BaseAgent):
 
     def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="sarsa_agent_recordings", show_bins=False):
         """Runs the trained agent and renders the environment."""
+        from renderer import Renderer
+        import pygame
         renderer = Renderer(env, self.name, save_gif=save_gif, output_dir=gif_path)
         
         for ep in range(episodes):
@@ -348,7 +349,7 @@ if __name__ == "__main__":
     # lunar_env = LLE_InitialVelocity(debug=True)
     lunar_env = LunarLanderEnv(debug=False, max_number_of_steps=25*60)
     # lunar_env = RandomLunarLander(debug=True)
-    print(f"Initial Reward Potential: {lunar_env._calculate_shaping():.2f}")
+    print(f"Initial Reward Potential: {lunar_env.calculate_shaping():.2f}")
 
     # Agent
     sarsa_agent = SARSAAgent(n_actions=num_actions, n_step=10)  #.load()

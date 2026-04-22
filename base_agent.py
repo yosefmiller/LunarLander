@@ -49,7 +49,7 @@ class BaseAgent(ABC):
         pass
 
     @abstractmethod
-    def load(self, path: str) -> None:
+    def load(self, path: str) -> 'BaseAgent':
         """
         Load agent state from checkpoint file.
 

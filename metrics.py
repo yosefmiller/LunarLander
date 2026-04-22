@@ -1,3 +1,4 @@
+import random
 from collections import Counter
 from typing import Dict, Iterable
 
@@ -5,7 +6,7 @@ import sarsa_agent
 import qlearning_agent
 import sarsa_lambda_agent
 import DQN_agent
-from lunar_lander_env import LunarLanderEnv, Renderer
+from lunar_lander_env import LunarLanderEnv
 from utils import plot_learning_curve
 from scipy import stats
 from scipy.stats import f_oneway
@@ -410,7 +411,7 @@ def measure_env_latency(n_runs=100000):
     env.reset()
     start = time.perf_counter()
     for _ in range(n_runs):
-        a = np.random.randint(len(env.action_space))
+        a = random.randrange(len(env.action_space))
         env.step(a)
     end = time.perf_counter()
     return 1000 * (end - start) / n_runs  # miliseconds
