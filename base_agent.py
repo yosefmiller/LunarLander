@@ -9,7 +9,7 @@ All agents must implement the abstract methods defined here.
 
 from abc import ABC, abstractmethod
 from collections import Counter
-from typing import Tuple, List
+from typing import Tuple, List, Self
 
 import numpy as np
 
@@ -49,7 +49,7 @@ class BaseAgent(ABC):
         pass
 
     @abstractmethod
-    def load(self, path: str) -> 'BaseAgent':
+    def load(self, path: str) -> Self:
         """
         Load agent state from checkpoint file.
 

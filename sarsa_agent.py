@@ -3,7 +3,7 @@ import random
 import time
 from collections import defaultdict, deque
 from functools import reduce
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Self
 
 import numpy as np
 from tqdm import tqdm
@@ -13,7 +13,7 @@ from lunar_lander_env import (SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelo
 from base_agent import BaseAgent
 
 class SARSAAgent(BaseAgent):
-    def __init__(self, n_actions=4, n_step=1, alpha=0.2, gamma=0.995, epsilon=1.0, epsilon_decay=0.9997, epsilon_min=0.1):
+    def __init__(self, n_actions=4, n_step=1, alpha=0.2, gamma=0.9995, epsilon=1.0, epsilon_decay=0.9998, epsilon_min=0.1):
         """
         SARSA Agent for the Lunar Lander environment.
 
@@ -48,29 +48,6 @@ class SARSAAgent(BaseAgent):
         
         # --- Discretization Bins ---
         # np.digitize returns the bin index. Out of bounds values go into the first/last bins.
-        # We increase resolution for y and vy as they are critical for the landing criteria.
-        # x_bins = np.concatenate([
-        #             np.array([-0.6, -0.3, -0.25]),
-        #             np.linspace(-0.2, 0.2, 7),   # high resolution near pad
-        #             np.array([0.25, 0.3, 0.6])
-        #         ])
-        # y_bins = np.concatenate([
-        #             np.linspace(0, 0.01, 4),      # landing zone precision
-        #             np.array([0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 0.8])
-        #         ])
-        # vx_bins = np.array([-0.5, -0.3, -0.1, -0.02, 0.02, 0.1, 0.3, 0.5])
-        # vy_bins = np.concatenate([
-        #             np.array([-0.5, -0.3, -0.1, -0.05]),
-        #             np.linspace(-0.05, 0.05, 5),   # critical landing region
-        #             np.array([0.05, 0.1, 0.3, 0.5])
-        #         ])
-        # angle_bins = np.concatenate([
-        #                 np.array([-1.0, -0.5, -0.2]),
-        #                 np.linspace(-0.2, 0.2, 7),   # upright precision
-        #                 np.array([0.2, 0.5, 1.0])
-        #             ])
-        # ang_vel_bins = np.array([-1.0, -0.5, -0.2, -0.05, 0.05, 0.2, 0.5, 1.0])
-
         x_bins = list(np.concatenate([
             -np.logspace(0, -0.9, base=10.0, num=5),
             [0.0],
@@ -93,7 +70,7 @@ class SARSAAgent(BaseAgent):
 
     @property
     def name(self) -> str:
-        return "SARSA"
+        return "SARSA" if self.n_step == 1 else f"SARSA-{self.n_step}Step"
 
     def get_number_of_states(self) -> int:
         """
@@ -180,16 +157,17 @@ class SARSAAgent(BaseAgent):
     def save(self, path):
         np.save(self.q_table, path)
 
-    def load(self, path="SARSA_Agent_checkpoints/agent1/best_qtable_values.npy") -> 'SARSAAgent':
+    def load(self, path=None) -> Self:
+        if not path:
+            path = f"{self.name}_Agent_checkpoints/agent1/best_qtable_values.npy"
         qtable = np.load(path, allow_pickle=True).item()
         self.q_table = defaultdict(lambda: np.zeros(self.n_actions), qtable)
         return self
 
     def train(self,
               env: LunarLanderEnv,
-              episodes=1000, 
-              agent_type='SARSA', 
-              chkpt_path="SARSA_Agent_checkpoints/agent1", 
+              episodes=1000,
+              chkpt_path=None,
               debug=False,
               logging_rate=500) -> List[EpisodeResult]:
         """Trains the agent on the given environment and returns episode history."""
@@ -197,6 +175,8 @@ class SARSAAgent(BaseAgent):
         total_bins = self.get_number_of_states()
 
         # Save Q table periodically
+        if not chkpt_path:
+            chkpt_path = f"{self.name}_Agent_checkpoints/agent1"
         os.makedirs(chkpt_path, exist_ok=True)
         ckpt_interval = max(1, episodes // 3)
 
@@ -352,7 +332,7 @@ if __name__ == "__main__":
     print(f"Initial Reward Potential: {lunar_env.calculate_shaping():.2f}")
 
     # Agent
-    sarsa_agent = SARSAAgent(n_actions=num_actions, n_step=10)  #.load()
+    sarsa_agent = SARSAAgent10Step()  #.load()
     print(f"Number of discrete states: {sarsa_agent.get_number_of_states():,}")
     print(f"Number of winning states: {sarsa_agent.get_number_of_winning_states():,}")
     for bin, states in sarsa_agent.get_states().items():

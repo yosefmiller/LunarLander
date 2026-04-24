@@ -111,7 +111,7 @@ class LunarLanderEnv:
     moment_of_inertia: float
 
 
-    def __init__(self, max_number_of_steps=1000, debug=False, pad_x_offset=0.0):
+    def __init__(self, max_number_of_steps=25*60, debug=False, pad_x_offset=0.0):
         """
         Initialize Lunar Lander Environment
 

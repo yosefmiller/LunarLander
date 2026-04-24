@@ -13,7 +13,7 @@ class QLearningAgent(SARSAAgent):
 
     @property
     def name(self) -> str:
-        return "QLEARNING"
+        return "QLEARNING" if self.n_step == 1 else f"QLEARNING_{self.n_step}Step"
 
     def update(self, trajectory: List[Tuple], next_state_tuple=None, next_action=None, done=False):
         """
@@ -40,25 +40,6 @@ class QLearningAgent(SARSAAgent):
         current_q = self.q_table[s_update][a_update]
         new_q = current_q + self.alpha * (G - current_q)
         self.q_table[s_update][a_update] = new_q
-
-    def load(self, path="QLearning_Agent_checkpoints/agent1/best_qtable_values.npy") -> 'QLearningAgent':
-        return super().load(path)
-
-    def train(self,
-              env: LunarLanderEnv,
-              episodes=1000,
-              agent_type='QLearning',
-              chkpt_path="QLearning_Agent_checkpoints/agent1",
-              debug=False,
-              logging_rate=500) -> List[EpisodeResult]:
-
-        """ Call SARSA train method but with Q-Learning specific parameters. """
-        return super().train(env=env,
-                             episodes=episodes,
-                             agent_type=agent_type,
-                             chkpt_path=chkpt_path,
-                             debug=debug,
-                             logging_rate=logging_rate)
 
     def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="qlearning_agent_recordings", show_bins=False):
         return super().show_progress(env=env, episodes=episodes, save_gif=save_gif, gif_path=gif_path, show_bins=show_bins)
