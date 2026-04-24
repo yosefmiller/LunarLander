@@ -1,49 +1,52 @@
-import numpy as np
+from typing import List, Tuple
+
 from sarsa_agent import SARSAAgent
-from utils import plot_learning_curve
-from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, Renderer
+from lunar_lander_env import SimpleLunarLanderEnv, LLE_XOffset, LLE_InitialVelocity, LunarLanderEnv, EpisodeResult
+from utils import plot_learning_curve, plot_outcomes
+
 
 class QLearningAgent(SARSAAgent):
     """
     Q-Learning agent for the Lunar Lander environment. 
-    Inherets from SARSAAgent but implements the Q-Learning update rule instead of SARSA.
+    Inherits from SARSAAgent but implements the n-step Q-Learning update rule instead of SARSA.
     """
-    def update(self, state_tuple, action, reward, next_state_tuple, next_action, done):
-        """
-        Update the Q-table based on the observed transition (state, action, reward, next state).
-        The update is performed using the Q-Learning algorithm, which uses the maximum Q-value of the next state 
-        to update the current Q-value.
-        
-        :param state_tuple: The current state represented as a tuple.
-        :param action: The action taken in the current state.
-        :param reward: The reward received after taking the action.
-        :param next_state_tuple: The next state represented as a tuple.
-        :param next_action: The action taken in the next state.
-        :param done: A flag indicating whether the episode is done.
-        """
-        # q value for current state
-        current_q = self.q_table[state_tuple][action]
 
-        # Q-Learning Formula: Q(S,A) = Q(S,A) + alpha * [R + gamma * argmax_a(Q(S', A')) - Q(S,A)]
-        next_q = 0 if done else max(self.q_table[next_state_tuple])
-        new_q = current_q + self.alpha * (reward + self.gamma * next_q - current_q)
-        self.q_table[state_tuple][action] = new_q
+    @property
+    def name(self) -> str:
+        return "QLEARNING" if self.n_step == 1 else f"QLEARNING_{self.n_step}Step"
 
-    def train(self,
-              env,
-              episodes=1000,
-              agent_type='QLearning',
-              chkpt_path="QLearning_Agent_checkpoints/agent1",
-              debug=False,
-              logging_rate=500) -> list:
+    def update(self, trajectory: List[Tuple], next_state_tuple=None, next_action=None, done=False):
+        """
+        Applies the n-step Q-Learning update rule.
+        Computes the n-step return using the maximum Q-value for the next state (off-policy).
+
+        :param trajectory: List of (state_tuple, action, reward) tuples for the n-step trajectory.
+        :param next_state_tuple: The state after the trajectory.
+        :param next_action: Ignored for Q-Learning (off-policy).
+        :param done: Whether the episode ended.
+        """
+        if not trajectory:
+            return
         
-        """ Call SARSA train method but with Q-Learning specific parameters. """
-        return super().train(env=env,
-                             episodes=episodes,
-                             agent_type=agent_type,
-                             chkpt_path=chkpt_path,
-                             debug=debug,
-                             logging_rate=logging_rate)
+        # Compute n-step return
+        G = 0
+        for i, (s, a, r) in enumerate(trajectory):
+            G += (self.gamma ** i) * r
+        if not done and next_state_tuple is not None:
+            G += (self.gamma ** self.n_step) * max(self.q_table[next_state_tuple])
+
+        # Update the first state-action in trajectory
+        s_update, a_update, _ = trajectory[0]
+        current_q = self.q_table[s_update][a_update]
+        new_q = current_q + self.alpha * (G - current_q)
+        self.q_table[s_update][a_update] = new_q
+
+    def show_progress(self, env: LunarLanderEnv, episodes=5, save_gif=False, gif_path="qlearning_agent_recordings", show_bins=False):
+        return super().show_progress(env=env, episodes=episodes, save_gif=save_gif, gif_path=gif_path, show_bins=show_bins)
+
+class QLearningAgent10Step(QLearningAgent):
+    def __init__(self, **kwargs):
+        super().__init__(n_step=10, **kwargs)
 
 if __name__ == "__main__":
     # Environment
@@ -51,19 +54,22 @@ if __name__ == "__main__":
     # lunar_env = SimpleLunarLanderEnv(num_actions=num_actions, debug=True)
     # lunar_env = LLE_XOffset(debug=True)
     # lunar_env = LLE_InitialVelocity(debug=True)
-    lunar_env = LunarLanderEnv(debug=True)
+    lunar_env = LunarLanderEnv(debug=True, max_number_of_steps=25*60)
 
     # Agent
-    qlearning_agent = QLearningAgent(n_actions=num_actions)
+    qlearning_agent = QLearningAgent(n_actions=num_actions, n_step=10)  #.load()
+    print(f"Number of discrete states: {qlearning_agent.get_number_of_states():,}")
+    print(f"Number of winning states: {qlearning_agent.get_number_of_winning_states():,}")
+    for bin, states in qlearning_agent.get_states().items():
+        print(bin, [f"{s:.3f}" for s in states])
 
     # Train the agent and save the Q-table
-    rewards = qlearning_agent.train(lunar_env, 
-                                    episodes=50000, 
-                                    debug=True)
-    plot_learning_curve(rewards, agent_type='Q-Learning', ylim=(-150, 200))
+    history = qlearning_agent.train(lunar_env, episodes=10000, debug=True)
+    plot_learning_curve([h['reward'] for h in history], agent_type='Q-Learning', ylim=(-150, 200))
+    plot_outcomes(history, agent_type="Q-Learning")
 
     # Evaluate and render the trained agent
     qlearning_agent.evaluate(lunar_env, episodes=1000, debug=True)
 
     # Show a few episodes of the trained agent
-    qlearning_agent.show_progress(lunar_env, episodes=5)
+    qlearning_agent.show_progress(lunar_env, episodes=5, save_gif=True, show_bins=True)

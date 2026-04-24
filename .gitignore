@@ -8,3 +8,10 @@
 
 # Environment files
 .venv/*
+
+# Checkpoint files
+*.npy
+*.pth
+*.csv
+*.jpg
+*.gif
